@@ -90,6 +90,12 @@ class NyoraRestServer(
             createContext("/library/bookmarks/remove") { handleBookmarkRemove(it) }
             createContext("/library/bookmarks/check") { handleBookmarkCheck(it) }
             createContext("/library/bookmarks") { handleBookmarks(it) }
+            createContext("/library/updates/refresh") { handleUpdatesRefresh(it) }
+            createContext("/library/updates/seen") { handleUpdatesSeen(it) }
+            createContext("/library/updates") { handleUpdates(it) }
+            createContext("/local/scan") { handleLocalScan(it) }
+            createContext("/local/chapter") { handleLocalChapter(it) }
+            createContext("/local/image") { handleLocalImage(it) }
             executor = Executors.newCachedThreadPool()
             start()
         }
@@ -332,12 +338,23 @@ class NyoraRestServer(
         val params = exchange.query()
         val id = params["id"] ?: return respondError(exchange, 400, "Missing 'id'")
         val url = params["url"] ?: return respondError(exchange, 400, "Missing 'url'")
+        val refresh = params["refresh"]?.let { it == "1" || it.equals("true", ignoreCase = true) } ?: false
         val source = facade.listSources().firstOrNull { it.id == id }
             ?: return respondError(exchange, 404, "Unknown source: $id")
+        if (!refresh) {
+            facade.cachedPages(url)?.let { cached ->
+                respondJson(exchange, 200, json.encodeToJsonElement(PagesResponse(pages = cached)))
+                return
+            }
+        }
         try {
             val service = facade.openExtension(source)
             val chapter = MangaChapter(id = url, title = url, url = url)
             val pages = runBlocking { service.getPageList(chapter) }
+            // Cache for the next request. `id` here is the source id; we don't
+            // know the manga id at this point, so leave it as the source id —
+            // the cache uses chapter_url as the unique key.
+            facade.cachePages(url, id, pages)
             respondJson(exchange, 200, json.encodeToJsonElement(PagesResponse(pages = pages)))
         } catch (error: Exception) {
             respondError(exchange, 500, error.message ?: "Pages failed")
@@ -407,6 +424,180 @@ class NyoraRestServer(
         val mangaId = exchange.query()["mangaId"]
             ?: return respondError(exchange, 400, "Missing 'mangaId'")
         respondJson(exchange, 200, buildJsonObject { put("favourited", facade.isFavourited(mangaId)) })
+    }
+
+    // MARK: - local: cbz / folder reader
+
+    private fun handleLocalScan(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("GET", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        val folder = exchange.query()["folder"] ?: return respondError(exchange, 400, "Missing 'folder'")
+        val dir = java.nio.file.Path.of(folder)
+        if (!java.nio.file.Files.isDirectory(dir)) {
+            return respondError(exchange, 404, "Not a directory: $folder")
+        }
+        val entries = try {
+            java.nio.file.Files.list(dir).use { stream ->
+                stream
+                    .filter { it.fileName.toString().endsWith(".cbz", ignoreCase = true) ||
+                             it.fileName.toString().endsWith(".cbr", ignoreCase = true) ||
+                             it.fileName.toString().endsWith(".zip", ignoreCase = true) }
+                    .sorted()
+                    .map { p ->
+                        LocalCbzEntry(
+                            path = p.toAbsolutePath().toString(),
+                            name = p.fileName.toString().removeSuffix(".cbz").removeSuffix(".CBZ"),
+                            sizeBytes = runCatching { java.nio.file.Files.size(p) }.getOrDefault(0L),
+                        )
+                    }
+                    .toList()
+            }
+        } catch (e: Exception) {
+            return respondError(exchange, 500, e.message ?: "Scan failed")
+        }
+        respondJson(exchange, 200, json.encodeToJsonElement(LocalScanResponse(entries)))
+    }
+
+    private fun handleLocalChapter(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("GET", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        val cbz = exchange.query()["cbz"] ?: return respondError(exchange, 400, "Missing 'cbz'")
+        val path = java.nio.file.Path.of(cbz)
+        if (!java.nio.file.Files.isRegularFile(path)) {
+            return respondError(exchange, 404, "Not a file: $cbz")
+        }
+        val entries: List<String> = try {
+            java.util.zip.ZipFile(path.toFile()).use { zf ->
+                val all = mutableListOf<String>()
+                val enum = zf.entries()
+                while (enum.hasMoreElements()) {
+                    val e = enum.nextElement()
+                    if (!e.isDirectory && isImageEntry(e.name)) all.add(e.name)
+                }
+                all.sorted()
+            }
+        } catch (e: Exception) {
+            return respondError(exchange, 500, e.message ?: "Open failed")
+        }
+        // Use the helper's loopback host:port as the base for image URLs.
+        val base = "http://127.0.0.1:${server!!.address.port}"
+        val pageUrls = entries.map { entry ->
+            val encCbz = java.net.URLEncoder.encode(cbz, java.nio.charset.StandardCharsets.UTF_8)
+            val encEntry = java.net.URLEncoder.encode(entry, java.nio.charset.StandardCharsets.UTF_8)
+            "$base/local/image?cbz=$encCbz&entry=$encEntry"
+        }
+        respondJson(exchange, 200, json.encodeToJsonElement(LocalChapterResponse(
+            name = path.fileName.toString().removeSuffix(".cbz").removeSuffix(".CBZ"),
+            pageCount = entries.size,
+            pageUrls = pageUrls,
+        )))
+    }
+
+    private fun handleLocalImage(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("GET", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        val params = exchange.query()
+        val cbz = params["cbz"] ?: return respondError(exchange, 400, "Missing 'cbz'")
+        val entry = params["entry"] ?: return respondError(exchange, 400, "Missing 'entry'")
+        val path = java.nio.file.Path.of(cbz)
+        if (!java.nio.file.Files.isRegularFile(path)) {
+            return respondError(exchange, 404, "Not a file: $cbz")
+        }
+        try {
+            java.util.zip.ZipFile(path.toFile()).use { zf ->
+                val zipEntry = zf.getEntry(entry)
+                    ?: return respondError(exchange, 404, "Entry not found: $entry")
+                val bytes = zf.getInputStream(zipEntry).readBytes()
+                val contentType = guessContentType(entry, bytes)
+                exchange.responseHeaders.add("Content-Type", contentType)
+                exchange.responseHeaders.add("Cache-Control", "private, max-age=86400")
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+        } catch (e: Exception) {
+            respondError(exchange, 500, e.message ?: "Read failed")
+        }
+    }
+
+    private fun isImageEntry(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+            lower.endsWith(".png") || lower.endsWith(".webp") ||
+            lower.endsWith(".gif") || lower.endsWith(".avif")
+    }
+
+    // MARK: - library: updates
+
+    private fun handleUpdates(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("GET", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        val rows = facade.updates().map { UpdateDto(
+            mangaId = it.mangaId,
+            mangaTitle = it.mangaTitle,
+            mangaCoverUrl = it.mangaCoverUrl,
+            sourceId = it.sourceId,
+            newChapters = it.newChapters,
+            totalChapters = it.totalChapters,
+            latestChapterTitle = it.latestChapterTitle,
+            lastSyncedAt = it.lastSyncedAt,
+        ) }
+        respondJson(exchange, 200, json.encodeToJsonElement(UpdatesResponse(rows)))
+    }
+
+    private fun handleUpdatesRefresh(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("POST", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        var checked = 0
+        var withNew = 0
+        try {
+            val favourites = facade.favourites()
+            for (manga in favourites) {
+                // Need a source to fetch from. Pick the source matching the manga.source ref name, or skip.
+                val sourceName = manga.source.name
+                val source = facade.listSources().firstOrNull { src ->
+                    src.isInstalled && (src.name == sourceName || src.id.endsWith(":$sourceName"))
+                } ?: continue
+                runCatching {
+                    val service = facade.openExtension(source)
+                    val details = runBlocking { service.getDetails(manga.url.ifBlank { manga.id }) }
+                    val count = details.chapters.size
+                    val latestTitle = details.chapters.firstOrNull()?.title.orEmpty()
+                    val before = (facade.updates().firstOrNull { it.mangaId == manga.id }?.totalChapters ?: -1)
+                    facade.recordUpdateSync(
+                        mangaId = manga.id,
+                        sourceId = source.id,
+                        currentChapterCount = count,
+                        latestChapterTitle = latestTitle,
+                    )
+                    checked++
+                    if (before in 0 until count) withNew++
+                }
+            }
+        } catch (error: Exception) {
+            respondError(exchange, 500, error.message ?: "Updates refresh failed"); return
+        }
+        respondJson(exchange, 200, buildJsonObject {
+            put("checked", checked)
+            put("withNew", withNew)
+        })
+    }
+
+    private fun handleUpdatesSeen(exchange: HttpExchange) {
+        if (!exchange.requestMethod.equals("POST", ignoreCase = true)) {
+            respondText(exchange, 405, "Method not allowed"); return
+        }
+        val mangaId = exchange.query()["mangaId"]
+        if (mangaId.isNullOrBlank()) {
+            facade.markAllUpdatesSeen()
+        } else {
+            facade.markUpdatesSeen(mangaId)
+        }
+        respondJson(exchange, 200, buildJsonObject { put("ok", true) })
     }
 
     // MARK: - library: bookmarks
@@ -622,6 +813,30 @@ private data class HistoryRowDto(
 
 @kotlinx.serialization.Serializable
 private data class FavouritesResponse(val entries: List<Manga>)
+
+@kotlinx.serialization.Serializable
+private data class LocalScanResponse(val entries: List<LocalCbzEntry>)
+
+@kotlinx.serialization.Serializable
+private data class LocalCbzEntry(val path: String, val name: String, val sizeBytes: Long)
+
+@kotlinx.serialization.Serializable
+private data class LocalChapterResponse(val name: String, val pageCount: Int, val pageUrls: List<String>)
+
+@kotlinx.serialization.Serializable
+private data class UpdatesResponse(val entries: List<UpdateDto>)
+
+@kotlinx.serialization.Serializable
+private data class UpdateDto(
+    val mangaId: String,
+    val mangaTitle: String,
+    val mangaCoverUrl: String,
+    val sourceId: String,
+    val newChapters: Int,
+    val totalChapters: Int,
+    val latestChapterTitle: String,
+    val lastSyncedAt: Long,
+)
 
 @kotlinx.serialization.Serializable
 private data class BookmarksResponse(val entries: List<BookmarkDto>)

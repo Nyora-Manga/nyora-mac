@@ -42,6 +42,26 @@ interface LibraryRepository {
     fun removeBookmark(id: Long) {}
 
     fun removeBookmarkForPage(mangaId: String, chapterId: String, page: Int) {}
+
+    /** Cached page list for a chapter, or null if missing or stale (>7d). */
+    fun cachedPages(chapterUrl: String): List<com.nyora.shared.model.MangaPage>? = null
+
+    fun cachePages(chapterUrl: String, mangaId: String, pages: List<com.nyora.shared.model.MangaPage>) {}
+
+    fun clearChapterPageCache() {}
+
+    /** Manga with new chapters since last sync. */
+    fun updates(): List<UpdateRow> = emptyList()
+
+    fun recordUpdateSync(
+        mangaId: String,
+        sourceId: String,
+        currentChapterCount: Int,
+        latestChapterTitle: String,
+    ) {}
+
+    fun markUpdatesSeen(mangaId: String) {}
+    fun markAllUpdatesSeen() {}
 }
 
 data class HistoryRow(
@@ -63,4 +83,15 @@ data class BookmarkRow(
     val page: Int,
     val note: String,
     val createdAt: Long,
+)
+
+data class UpdateRow(
+    val mangaId: String,
+    val mangaTitle: String,
+    val mangaCoverUrl: String,
+    val sourceId: String,
+    val newChapters: Int,
+    val totalChapters: Int,
+    val latestChapterTitle: String,
+    val lastSyncedAt: Long,
 )

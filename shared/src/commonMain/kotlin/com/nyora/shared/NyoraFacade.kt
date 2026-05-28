@@ -70,4 +70,14 @@ class NyoraFacade(
     fun removeBookmark(id: Long) = repository.removeBookmark(id)
     fun removeBookmarkForPage(mangaId: String, chapterId: String, page: Int) =
         repository.removeBookmarkForPage(mangaId, chapterId, page)
+
+    fun cachedPages(chapterUrl: String) = repository.cachedPages(chapterUrl)
+    fun cachePages(chapterUrl: String, mangaId: String, pages: List<com.nyora.shared.model.MangaPage>) =
+        repository.cachePages(chapterUrl, mangaId, pages)
+
+    fun updates() = repository.updates()
+    fun recordUpdateSync(mangaId: String, sourceId: String, currentChapterCount: Int, latestChapterTitle: String) =
+        repository.recordUpdateSync(mangaId, sourceId, currentChapterCount, latestChapterTitle)
+    fun markUpdatesSeen(mangaId: String) = repository.markUpdatesSeen(mangaId)
+    fun markAllUpdatesSeen() = repository.markAllUpdatesSeen()
 }

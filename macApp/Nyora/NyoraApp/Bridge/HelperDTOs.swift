@@ -151,3 +151,41 @@ struct HelperBookmark: Decodable, Identifiable, Hashable {
 struct HelperBookmarkedResponse: Decodable {
     let bookmarked: Bool
 }
+
+struct HelperUpdatesResponse: Decodable {
+    let entries: [HelperUpdate]
+}
+
+struct HelperUpdate: Decodable, Identifiable, Hashable {
+    let mangaId: String
+    let mangaTitle: String
+    let mangaCoverUrl: String
+    let sourceId: String
+    let newChapters: Int
+    let totalChapters: Int
+    let latestChapterTitle: String
+    let lastSyncedAt: Int64
+    var id: String { mangaId }
+}
+
+struct HelperUpdatesRefreshResult: Decodable {
+    let checked: Int
+    let withNew: Int
+}
+
+struct HelperLocalScanResponse: Decodable {
+    let entries: [HelperLocalCbz]
+}
+
+struct HelperLocalCbz: Decodable, Identifiable, Hashable {
+    let path: String
+    let name: String
+    let sizeBytes: Int64
+    var id: String { path }
+}
+
+struct HelperLocalChapter: Decodable {
+    let name: String
+    let pageCount: Int
+    let pageUrls: [String]
+}

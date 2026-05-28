@@ -24,6 +24,12 @@ final class AppState: ObservableObject {
     @Published var detailsIsFavourited: Bool = false
     @Published var bookmarks: [HelperBookmark] = []
     @Published var currentPageBookmarked: Bool = false
+    @Published var updates: [HelperUpdate] = []
+    @Published var isRefreshingUpdates: Bool = false
+    @Published var localFolder: String = UserDefaults.standard.string(forKey: "nyora.local.folder") ?? "" {
+        didSet { UserDefaults.standard.set(localFolder, forKey: "nyora.local.folder") }
+    }
+    @Published var localEntries: [HelperLocalCbz] = []
 
     // Reader state
     @Published var readerMode: ReaderMode = .paged
@@ -32,8 +38,12 @@ final class AppState: ObservableObject {
     @Published var readerChapterIndex: Int = 0
     @Published var readerMangaId: String = ""
     @Published var readerMangaTitle: String = ""
+    @Published var rtlReading: Bool = UserDefaults.standard.bool(forKey: "nyora.reader.rtl") {
+        didSet { UserDefaults.standard.set(rtlReading, forKey: "nyora.reader.rtl") }
+    }
 
     let helper = NyoraHelperBridge()
+    let readerPrefs = ReaderPrefs()
 
     func bootstrap() async {
         statusMessage = "Locating Nyora helper…"
@@ -48,6 +58,7 @@ final class AppState: ObservableObject {
                     await self.reloadHistory()
                     await self.reloadFavourites()
                     await self.reloadBookmarks()
+                    await self.reloadUpdates()
                     if let pinned = self.sources.first(where: { $0.isPinned && $0.isInstalled }) {
                         self.selectedSourceId = pinned.id
                         await self.loadPopular(sourceId: pinned.id)
@@ -317,6 +328,66 @@ final class AppState: ObservableObject {
             await reloadBookmarks()
         } catch {
             statusMessage = "Bookmark failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - updates
+
+    func reloadUpdates() async {
+        do {
+            updates = try await helper.updates()
+        } catch {
+            statusMessage = "Updates load failed: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshUpdates() async {
+        isRefreshingUpdates = true
+        defer { isRefreshingUpdates = false }
+        do {
+            let result = try await helper.refreshUpdates()
+            statusMessage = "Checked \(result.checked) favourites · \(result.withNew) with new chapters"
+            await reloadUpdates()
+        } catch {
+            statusMessage = "Updates refresh failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - local CBZ
+
+    func scanLocalFolder() async {
+        guard !localFolder.isEmpty else { return }
+        do {
+            localEntries = try await helper.scanLocalFolder(localFolder)
+        } catch {
+            statusMessage = "Local scan failed: \(error.localizedDescription)"
+            localEntries = []
+        }
+    }
+
+    func openLocalCbz(_ entry: HelperLocalCbz) async {
+        do {
+            let chapter = try await helper.openLocalChapter(entry.path)
+            let pages = chapter.pageUrls.map { PageSummary(url: $0) }
+            activeChapter = ChapterSummary(id: entry.path, title: chapter.name, pages: pages)
+            readerChapters = []   // local CBZ is standalone
+            readerChapterIndex = 0
+            readerMangaId = "local:\(entry.path)"
+            readerMangaTitle = entry.name
+            readerPageIndex = 0
+            pendingNavigation = .reader
+            statusMessage = "Opened \(entry.name) (\(chapter.pageCount) pages)"
+        } catch {
+            statusMessage = "Failed to open: \(error.localizedDescription)"
+        }
+    }
+
+    func markUpdatesSeen(_ mangaId: String) async {
+        do {
+            try await helper.markUpdatesSeen(mangaId: mangaId)
+            await reloadUpdates()
+        } catch {
+            statusMessage = "Mark-seen failed: \(error.localizedDescription)"
         }
     }
 

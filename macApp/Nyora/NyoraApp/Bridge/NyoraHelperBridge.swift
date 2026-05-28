@@ -143,6 +143,37 @@ actor NyoraHelperBridge {
         return response.bookmarked
     }
 
+    // MARK: Library — updates
+
+    func updates() async throws -> [HelperUpdate] {
+        let response: HelperUpdatesResponse = try await get("/library/updates")
+        return response.entries
+    }
+
+    func refreshUpdates() async throws -> HelperUpdatesRefreshResult {
+        return try await post("/library/updates/refresh")
+    }
+
+    func markUpdatesSeen(mangaId: String? = nil) async throws {
+        struct OkResponse: Decodable { let ok: Bool }
+        if let mangaId {
+            let _: OkResponse = try await post("/library/updates/seen?mangaId=\(mangaId.urlEscaped)")
+        } else {
+            let _: OkResponse = try await post("/library/updates/seen")
+        }
+    }
+
+    // MARK: Local CBZ reader
+
+    func scanLocalFolder(_ folder: String) async throws -> [HelperLocalCbz] {
+        let response: HelperLocalScanResponse = try await get("/local/scan?folder=\(folder.urlEscaped)")
+        return response.entries
+    }
+
+    func openLocalChapter(_ cbzPath: String) async throws -> HelperLocalChapter {
+        return try await get("/local/chapter?cbz=\(cbzPath.urlEscaped)")
+    }
+
     // MARK: Browse
 
     func popular(sourceId: String, page: Int) async throws -> [MangaSummary] {

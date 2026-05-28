@@ -1,0 +1,24 @@
+CREATE TABLE IF NOT EXISTS chapter_pages (
+    chapter_url TEXT NOT NULL PRIMARY KEY,
+    manga_id TEXT NOT NULL DEFAULT '',
+    pages_json TEXT NOT NULL DEFAULT '[]',
+    fetched_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS chapter_pages_manga_idx ON chapter_pages(manga_id);
+
+selectForChapter:
+SELECT * FROM chapter_pages WHERE chapter_url = :chapter_url;
+
+upsert:
+INSERT OR REPLACE INTO chapter_pages (chapter_url, manga_id, pages_json, fetched_at)
+VALUES (?, ?, ?, ?);
+
+deleteByMangaId:
+DELETE FROM chapter_pages WHERE manga_id = :manga_id;
+
+deleteAll:
+DELETE FROM chapter_pages;
+
+countAll:
+SELECT COUNT(*) FROM chapter_pages;

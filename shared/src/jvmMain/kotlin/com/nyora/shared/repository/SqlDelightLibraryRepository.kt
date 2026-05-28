@@ -227,6 +227,82 @@ class SqlDelightLibraryRepository(
         database.bookmarkQueries.removeByPage(mangaId, chapterId, page.toLong())
     }
 
+    // MARK: - chapter page cache
+
+    override fun cachedPages(chapterUrl: String): List<com.nyora.shared.model.MangaPage>? {
+        val row = database.chapterPagesQueries.selectForChapter(chapterUrl).executeAsOneOrNull() ?: return null
+        val ageMs = System.currentTimeMillis() - row.fetched_at
+        if (ageMs > CACHE_MAX_AGE_MS) return null
+        return runCatching {
+            json.decodeFromString(
+                ListSerializer(com.nyora.shared.model.MangaPage.serializer()),
+                row.pages_json,
+            )
+        }.getOrNull()
+    }
+
+    override fun cachePages(chapterUrl: String, mangaId: String, pages: List<com.nyora.shared.model.MangaPage>) {
+        val payload = json.encodeToString(
+            ListSerializer(com.nyora.shared.model.MangaPage.serializer()),
+            pages,
+        )
+        database.chapterPagesQueries.upsert(
+            chapter_url = chapterUrl,
+            manga_id = mangaId,
+            pages_json = payload,
+            fetched_at = System.currentTimeMillis(),
+        )
+    }
+
+    override fun clearChapterPageCache() {
+        database.chapterPagesQueries.deleteAll()
+    }
+
+    // MARK: - updates
+
+    override fun updates(): List<UpdateRow> {
+        return database.mangaUpdateQueries.selectAllWithNew().executeAsList().map { row ->
+            UpdateRow(
+                mangaId = row.manga_id,
+                mangaTitle = row.manga_title,
+                mangaCoverUrl = row.manga_cover_url,
+                sourceId = row.source_id,
+                newChapters = row.new_chapters_count.toInt(),
+                totalChapters = row.last_chapter_count.toInt(),
+                latestChapterTitle = row.latest_chapter_title,
+                lastSyncedAt = row.last_synced_at,
+            )
+        }
+    }
+
+    override fun recordUpdateSync(
+        mangaId: String,
+        sourceId: String,
+        currentChapterCount: Int,
+        latestChapterTitle: String,
+    ) {
+        val existing = database.mangaUpdateQueries.selectByMangaId(mangaId).executeAsOneOrNull()
+        val previousCount = existing?.last_chapter_count?.toInt() ?: -1
+        val diff = if (previousCount < 0) 0 else (currentChapterCount - previousCount).coerceAtLeast(0)
+        val accumulated = (existing?.new_chapters_count?.toInt() ?: 0) + diff
+        database.mangaUpdateQueries.upsert(
+            manga_id = mangaId,
+            source_id = sourceId,
+            last_chapter_count = currentChapterCount.toLong(),
+            new_chapters_count = accumulated.toLong(),
+            latest_chapter_title = latestChapterTitle,
+            last_synced_at = System.currentTimeMillis(),
+        )
+    }
+
+    override fun markUpdatesSeen(mangaId: String) {
+        database.mangaUpdateQueries.markSeen(mangaId)
+    }
+
+    override fun markAllUpdatesSeen() {
+        database.mangaUpdateQueries.markAllSeen()
+    }
+
     private fun mangaRowToDomain(
         id: String, title: String, alt_titles: String,
         url: String, public_url: String, rating: Double,
@@ -374,6 +450,9 @@ class SqlDelightLibraryRepository(
     private fun Boolean.toLong(): Long = if (this) 1L else 0L
 
     companion object {
+        // 7 days
+        private const val CACHE_MAX_AGE_MS: Long = 7L * 24 * 60 * 60 * 1000
+
         fun defaultDatabasePath(): Path {
             val home = Path.of(System.getProperty("user.home"))
             val base = home.resolve("Library").resolve("Application Support").resolve("Nyora")
