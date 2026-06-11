@@ -6,10 +6,14 @@
     <string>en</string>
     <key>CFBundleIdentifier</key>
     <string>com.nyora.mac</string>
+    <key>CFBundleExecutable</key>
+    <string>Nyora</string>
     <key>CFBundleName</key>
     <string>Nyora</string>
     <key>CFBundleDisplayName</key>
     <string>Nyora</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
@@ -23,5 +27,27 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
+    <key>GIDClientID</key>
+    <string>181067068545-9jkcbv6cb552jvmn6o3rdk87m2195g7n.apps.googleusercontent.com</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.nyora.mac</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>nyora</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>com.googleusercontent.apps.181067068545-9jkcbv6cb552jvmn6o3rdk87m2195g7n</string>
+                <string>com.googleusercontent.apps.181067068545-5r2ob1jv4mc0v8gd52fgk2jt28pk3370</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

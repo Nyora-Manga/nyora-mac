@@ -41,7 +41,7 @@ Mapping of Android packages → port destination:
 | `com.nyora.android.core.model` | `shared/commonMain/com/nyora/shared/model` | Strip Android `Parcelable`, `@Parcelize`, `Resources`. |
 | `com.nyora.android.core.db.entity` | TBD — SQLDelight schema | Room → SQLDelight; ~50 migrations to fold or drop. |
 | `com.nyora.android.core.network` | `shared/jvmMain/com/nyora/shared/net` | Use `java.net.http.HttpClient` instead of OkHttp+WebView. |
-| `com.nyora.android.core.parser` | `shared/jvmMain/com/nyora/shared/extension` | Wraps `org.koitharu.kotatsu.parsers`. |
+| `com.nyora.android.core.parser` | `shared/jvmMain/com/nyora/shared/extension` | Wraps `org.koitharu.nyora.parsers`. |
 | `com.nyora.android.mihon` | `shared/jvmMain` + decision | See "Mihon strategy" below. |
 | `com.nyora.android.reader` | `macApp/Views/ReaderView` | UI logic re-implemented in SwiftUI; page loader stays in `shared`. |
 | `com.nyora.android.details` | `macApp/Views/DetailsView` (TODO) | XML/ViewBinding → SwiftUI. |
@@ -61,9 +61,9 @@ Mihon extensions ship as Android APKs. Three options:
 
 1. **Remote proxy** — keep a paired Android device or emulator and forward `/dalvik` requests. Lowest engineering cost, highest user friction.
 2. **APK → JVM bytecode** — `dex2jar` the APK at install time and load it into the helper's classpath. Requires shimming `android.*` classes.
-3. **Drop Mihon on Mac** — rely only on JavaScript-engine sources and the native `org.koitharu.kotatsu.parsers` library.
+3. **Drop Mihon on Mac** — rely only on JavaScript-engine sources and the native `org.koitharu.nyora.parsers` library.
 
-Recommendation for v1: ship with Kotatsu native parsers + JavaScript sources; defer Mihon.
+Recommendation for v1: ship with Nyora native parsers + JavaScript sources; defer Mihon.
 
 ## Storage
 

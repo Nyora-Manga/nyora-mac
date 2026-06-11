@@ -7,11 +7,15 @@ plugins {
     id("app.cash.sqldelight") version "2.1.0"
 }
 
+// Engine source lives in the nyora-shared submodule — one source of truth across
+// the mac/linux/windows desktop apps. This module compiles it via srcDirs.
+val sharedSrc = "${rootProject.projectDir}/nyora-shared/src"
+
 sqldelight {
     databases {
         create("NyoraDatabase") {
-            packageName.set("com.nyora.shared.db")
-            // Schema lives under shared/src/commonMain/sqldelight/com/nyora/shared/db
+            packageName.set("com.nyora.hasan72341.shared.db")
+            srcDirs.from(file("$sharedSrc/commonMain/sqldelight"))
         }
     }
 }
@@ -21,19 +25,26 @@ kotlin {
 
     jvm()
 
-    val xcframeworkName = "NyoraShared"
-    listOf(
-        macosX64(),
-        macosArm64(),
-    ).forEach { target ->
-        target.binaries.framework {
-            baseName = xcframeworkName
-            isStatic = true
+    // macOS native XCFramework targets are only valid on a macOS host.
+    // On Linux/Windows we skip them so the JVM-only build path works unchanged.
+    val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+    if (isMacOS) {
+        val xcframeworkName = "NyoraShared"
+        listOf(
+            macosX64(),
+            macosArm64(),
+        ).forEach { target ->
+            target.binaries.framework {
+                baseName = xcframeworkName
+                isStatic = true
+            }
         }
     }
 
     sourceSets {
         val commonMain by getting {
+            kotlin.srcDirs("$sharedSrc/commonMain/kotlin")
+            resources.srcDirs("$sharedSrc/commonMain/resources")
             dependencies {
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
@@ -43,27 +54,28 @@ kotlin {
             }
         }
         val jvmMain by getting {
+            kotlin.srcDirs("$sharedSrc/jvmMain/kotlin")
+            resources.srcDirs("$sharedSrc/jvmMain/resources")
             dependencies {
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
                 implementation("org.graalvm.js:js:24.1.2")
                 implementation("org.graalvm.sdk:graal-sdk:24.1.2")
                 implementation("app.cash.sqldelight:sqlite-driver:2.1.0")
-                // OkHttp 4 — required by kotatsu parsers and our LoaderContext impl.
+                // OkHttp 4 — required by nyora parsers and our LoaderContext impl.
                 implementation("com.squareup.okhttp3:okhttp:4.12.0")
-                // Kotatsu parsers library (mirrors what Nyora Android uses).
-                // Note: Android excludes org.json because the OS provides it;
-                // on plain JVM we need the Maven artifact bundled.
-                implementation("com.github.clquwu:kotatsu-parsers-redo:59c033ecfd")
-                implementation("org.json:json:20240303")
+                implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
+                implementation("org.jsoup:jsoup:1.17.2")
             }
         }
-        // The default hierarchy template (Kotlin 2.x) auto-creates macosMain as
-        // an intermediate set between commonMain and macosArm64Main / macosX64Main.
-        // SQLDelight's native-driver gets attached to each leaf target so we
-        // don't need to look up the intermediate set name.
-        val nativeDriver = "app.cash.sqldelight:native-driver:2.1.0"
-        getByName("macosArm64Main").dependencies { implementation(nativeDriver) }
-        getByName("macosX64Main").dependencies { implementation(nativeDriver) }
+        if (isMacOS) {
+            // The default hierarchy template (Kotlin 2.x) auto-creates macosMain as
+            // an intermediate set between commonMain and macosArm64Main / macosX64Main.
+            // SQLDelight's native-driver gets attached to each leaf target so we
+            // don't need to look up the intermediate set name.
+            val nativeDriver = "app.cash.sqldelight:native-driver:2.1.0"
+            getByName("macosArm64Main").dependencies { implementation(nativeDriver) }
+            getByName("macosX64Main").dependencies { implementation(nativeDriver) }
+        }
     }
 }
 
@@ -74,14 +86,14 @@ tasks.register<JavaExec>("run") {
     val jvmMain = kotlin.targets.getByName("jvm").compilations.getByName("main")
     dependsOn(jvmMain.compileTaskProvider)
     classpath = files(jvmMain.output.allOutputs, jvmMain.runtimeDependencyFiles)
-    mainClass.set("com.nyora.shared.HelperMain")
+    mainClass.set("com.nyora.hasan72341.shared.HelperMain")
     standardInput = System.`in`
     project.findProperty("nyoraHelperPortFile")?.toString()?.let { portFile ->
         systemProperty("nyora.helper.port-file", portFile)
     }
 }
 
-// One-shot parser audit: probes every Kotatsu parser source and reports which
+// One-shot parser audit: probes every Nyora parser source and reports which
 // ones return data, fail with network errors, need WebView, etc.
 //
 //   gradle :shared:auditParsers
@@ -89,11 +101,11 @@ tasks.register<JavaExec>("run") {
 //
 tasks.register<JavaExec>("auditParsers") {
     group = "verification"
-    description = "Probe every Kotatsu parser source for whether it currently works."
+    description = "Probe every Nyora parser source for whether it currently works."
     val jvmMain = kotlin.targets.getByName("jvm").compilations.getByName("main")
     dependsOn(jvmMain.compileTaskProvider)
     classpath = files(jvmMain.output.allOutputs, jvmMain.runtimeDependencyFiles)
-    mainClass.set("com.nyora.shared.parser.ParserAuditMain")
+    mainClass.set("com.nyora.hasan72341.shared.parser.ParserAuditMain")
     project.findProperty("auditLimit")?.toString()?.let { args("--limit=$it") }
     args("--out=${layout.buildDirectory.file("parser-audit.tsv").get().asFile.absolutePath}")
 }
@@ -154,7 +166,7 @@ tasks.register<Jar>("helperJar") {
 
     manifest {
         attributes(
-            "Main-Class" to "com.nyora.shared.HelperMain",
+            "Main-Class" to "com.nyora.hasan72341.shared.HelperMain",
             "Multi-Release" to "true",
         )
     }

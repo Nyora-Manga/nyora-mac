@@ -24,7 +24,7 @@ actor HelperLauncher {
     func currentProcess() -> Process? { process }
 
     func launchIfNeeded() async -> LaunchResult {
-        if isHelperReachable() { return .alreadyRunning }
+        if await isHelperReachable() { return .alreadyRunning }
 
         guard let java = locateJava() else { return .javaMissing }
         guard let jar = locateHelperJar() else { return .jarMissing }
@@ -77,29 +77,14 @@ actor HelperLauncher {
 
     // MARK: - Discovery
 
-    private func isHelperReachable() -> Bool {
+    private func isHelperReachable() async -> Bool {
         guard let portFile = portFileURL(),
               let portString = try? String(contentsOf: portFile, encoding: .utf8),
               let port = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return false }
         let url = URL(string: "http://127.0.0.1:\(port)/health")!
-        return synchronousPing(url: url)
-    }
-
-    private func synchronousPing(url: URL) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        var ok = false
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 0.6
-        let task = URLSession.shared.dataTask(with: req) { _, response, _ in
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                ok = true
-            }
-            semaphore.signal()
-        }
-        task.resume()
-        _ = semaphore.wait(timeout: .now() + 1.0)
-        return ok
+        var req = URLRequest(url: url); req.timeoutInterval = 0.6
+        return (try? await URLSession.shared.data(for: req)) != nil
     }
 
     private func locateJava() -> URL? {

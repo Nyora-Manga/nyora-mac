@@ -1,0 +1,3 @@
+[submodule "nyora-shared"]
+	path = nyora-shared
+	url = https://github.com/Hasan72341/nyora-shared.git

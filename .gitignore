@@ -21,3 +21,16 @@ DerivedData/
 
 # Runtime
 *.log
+
+# Large CoreML model binaries — regenerate via tools/colorize/README.md
+# (or commit via Git LFS if you prefer). Same convention as the manga-ocr models.
+*.mlmodelc/
+*.mlpackage/
+
+# Xcode build output
+build-xcode/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.build/
+.env.sync

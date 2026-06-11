@@ -54,7 +54,7 @@ Android uses Room. We're using SQLDelight 2.1 (KMP-native, JDBC driver on JVM, n
 ## Phase 3 — Extension engines
 
 - [x] **JavaScript:** wired and working (GraalVM JS under the JVM helper).
-- [x] **Kotatsu native parsers** (`org.koitharu:kotatsu-parsers-redo` from JitPack): `JvmMangaLoaderContext` + `SimpleCookieJar` + `ParserMangaExtensionService` bridge a parser source to our `MangaExtensionService`. ~1300 sources available; **5 seeded pre-installed**: MangaDex, MANGA Plus, MangaReader, Asura Scans, ComicK.
+- [x] **Nyora native parsers** (`org.koitharu:nyora-parsers-redo` from JitPack): `JvmMangaLoaderContext` + `SimpleCookieJar` + `ParserMangaExtensionService` bridge a parser source to our `MangaExtensionService`. ~1300 sources available; **5 seeded pre-installed**: MangaDex, MANGA Plus, MangaReader, Asura Scans, ComicK.
 - [x] Dispatch wired in `JvmExtensionRuntime` via `SourceEngine.Parser`; parser instances cached so cookies persist across calls.
 - [x] Chapter title fallback (e.g. "Vol. 15 Ch. 114") when the parser returns a null/blank title.
 - [x] OkHttp 4 + org.json bundled so the JAR works on plain JVM without Android core libs.
@@ -75,19 +75,25 @@ Android uses Room. We're using SQLDelight 2.1 (KMP-native, JDBC driver on JVM, n
 - [x] Continuous page-position persistence via `/library/history/record` on every navigation.
 - [x] Prev/next chapter buttons in the reader toolbar; clears the saved-page so the next chapter starts at 0.
 - [x] Arrow-key navigation in paged mode (←/→).
-- [ ] Pinch zoom in paged mode + double-click to zoom.
-- [ ] Reversed reading order (right-to-left for manga).
+- [x] Pinch-to-zoom (1.0×–4.0×) + drag-to-pan + double-tap toggle (1.0× ↔ 2.0×) in `ReaderPagedView`.
+- [x] Right-to-left reading order — `AppState.rtlReading` (UserDefaults-backed), toolbar toggle, flips paged nav + arrow-key direction.
+- [x] **Chapter page cache** keyed by `chapter_url` — new `chapter_pages` SQLite table, 7-day TTL, `?refresh=1` cache-bypass query param. Measured 37× speedup on cache hit (410 ms cold → 11 ms warm).
 - [ ] Double-page mode (two pages side-by-side).
-- [ ] Chapter page cache keyed by `(mangaId, chapterId)` — currently re-fetches on every chapter open.
 - [ ] Download-to-CBZ (mirrors Android's downloader).
 
 ## Phase 5 — Library features
 
-- [ ] Favourites with categories and sort orders.
-- [ ] History, Updates feed, Suggestions, Bookmarks, Local CBZ/CBR.
+- [x] **Favourites** — heart toggle, persisted, dedicated grid view.
+- [x] **History** — auto-recorded on chapter open, dedicated view with covers + relative time.
+- [x] **Bookmarks** — per-page bookmark in the reader, grouped Bookmarks view.
+- [x] **Updates feed** — `manga_update` table tracks `last_chapter_count`; `/library/updates/refresh` iterates favourites and diffs against the source; `UpdatesView` shows manga with new chapters and "Mark as seen" action.
+- [x] **Local CBZ reader** — `NSOpenPanel` folder picker, helper endpoints `/local/scan`, `/local/chapter`, `/local/image` extract pages from `.cbz/.cbr/.zip` on demand and serve through the same reader.
+- [x] **Settings** — real Form with reader defaults (paged/webtoon, prefetch, RTL), library prefs (history retention, NSFW filter), Storage section with "Reveal in Finder", helper status.
+- [ ] Favourites categories (Phase 5.1).
 - [ ] Sync (Mihon Sync / nyora.app endpoints).
 - [ ] Trackers (AniList, MAL, Shikimori, Kitsu, Bangumi).
 - [ ] Filter sheet on remote source lists.
+- [ ] Suggestions + Feed views (currently still empty placeholders).
 
 ## Phase 6 — UI polish
 
