@@ -33,3 +33,4 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .build/
+.env.sync
