@@ -19,6 +19,18 @@ A native **macOS** manga reader built from scratch in **SwiftUI** — hundreds o
 
 ---
 
+## 📸 Screenshots
+
+| | |
+|:-:|:-:|
+| ![Discover](docs/screenshots/feed.png) | ![Explore](docs/screenshots/explore.png) |
+| ![Details](docs/screenshots/detail.png) | ![Reader](docs/screenshots/reader.png) |
+| ![Search](docs/screenshots/search-results.png) | ![Settings](docs/screenshots/settings.png) |
+
+> More screens (history, updates, stats, search) are in [`docs/screenshots/`](docs/screenshots/).
+
+---
+
 ## ✨ Features
 
 - 📚 **Hundreds of online sources** — browse, search & filter manga, manhwa & manhua.
