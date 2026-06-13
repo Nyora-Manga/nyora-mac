@@ -5,7 +5,7 @@
 #   ./macApp/scripts/build-dmg.sh
 #
 # Outputs:
-#   nyora-mac/build/Nyora.dmg   (~400-500 MB, no Java install required by end-user)
+#   nyora-mac/build/Nyora.dmg   (~100 MB compressed, no Java install required by end-user)
 #
 # The bundled JRE (Adoptium Temurin 17) is cached in nyora-mac/build/jre-cache/
 # so re-runs skip the download.
