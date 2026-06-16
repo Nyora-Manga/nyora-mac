@@ -73,6 +73,15 @@ download_jre() {
 
 # ── Step 2: Build the fat helper JAR ─────────────────────────────────────────
 build_jar() {
+    # Bake the OAuth client secret into the helper jar's resources so the
+    # distributed DMG can complete Google sign-in (end-user Macs have no
+    # env/.env.sync). Sourced from GOOGLE_CLIENT_SECRET or the local .env.sync;
+    # the file is gitignored and never committed.
+    local secret="${GOOGLE_CLIENT_SECRET:-$(grep -hs '^GOOGLE_CLIENT_SECRET=' "$NYORA_MAC/nyora-shared/.env.sync" "$NYORA_MAC/.env.sync" 2>/dev/null | head -1 | cut -d= -f2-)}"
+    mkdir -p "$NYORA_MAC/nyora-shared/src/jvmMain/resources"
+    printf 'GOOGLE_CLIENT_SECRET=%s\n' "$secret" > "$NYORA_MAC/nyora-shared/src/jvmMain/resources/nyora-oauth.properties"
+    [ -z "$secret" ] && echo "⚠ GOOGLE_CLIENT_SECRET not found (env or .env.sync) — Google sign-in won't work in this build."
+
     echo "→ Building nyora-helper.jar…"
     cd "$NYORA_MAC"
     ./gradlew :shared:helperJar --quiet
