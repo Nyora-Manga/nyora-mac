@@ -563,44 +563,62 @@ actor NyoraHelperBridge {
         return resp.hasLocalData
     }
 
-    // MARK: AniList browse feed (public GraphQL — no auth needed)
+    // MARK: MangaBaka browse feed (public REST — no auth needed)
 
-    /// Fetches Trending / Popular-this-season / Top-rated manga from AniList's
-    /// public GraphQL API in a single batched request. When `hideAdult` is
-    /// true, `isAdult: false` is passed so NSFW titles never reach the feed.
+    /// Fetches Trending / Popular-manhwa / Top-rated manga from the MangaBaka
+    /// series database. AniList disabled its public API, so discovery now comes
+    /// from MangaBaka, which is search-first (no trending endpoint): we fetch a
+    /// few broad/filtered searches in parallel and rank them client-side. Every
+    /// call passes `content_rating=safe`, so NSFW titles never reach the feed
+    /// regardless of `hideAdult`.
     func anilistBrowse(hideAdult: Bool) async throws -> AniListBrowseData {
-        let adultClause = hideAdult ? ", isAdult: false" : ""
-        let fields = "id title { romaji english native } coverImage { large } isAdult genres averageScore"
-        let query = """
-        query {
-          trending: Page(page: 1, perPage: 24) {
-            media(type: MANGA, sort: TRENDING_DESC\(adultClause)) { \(fields) }
-          }
-          popular: Page(page: 1, perPage: 24) {
-            media(type: MANGA, sort: POPULARITY_DESC\(adultClause)) { \(fields) }
-          }
-          topRated: Page(page: 1, perPage: 24) {
-            media(type: MANGA, sort: SCORE_DESC\(adultClause)) { \(fields) }
-          }
+        async let mangaPopular = mangaBakaRail(type: "manga", sortByRating: false)
+        async let manhwaPopular = mangaBakaRail(type: "manhwa", sortByRating: false)
+        async let mangaTopRated = mangaBakaRail(type: "manga", sortByRating: true)
+
+        // A single rail failing (network/rate) resolves to [] so the rest of the
+        // feed still renders.
+        let trending = (try? await mangaPopular) ?? []
+        let popular = (try? await manhwaPopular) ?? []
+        let topRated = (try? await mangaTopRated) ?? []
+
+        if trending.isEmpty && popular.isEmpty && topRated.isEmpty {
+            throw HelperError(error: "MangaBaka feed unavailable")
         }
-        """
-        guard let url = URL(string: "https://graphql.anilist.co") else {
-            throw HelperError(error: "Bad AniList URL")
+        return AniListBrowseData(
+            trending: AniListBrowsePage(media: trending),
+            popular: AniListBrowsePage(media: popular),
+            topRated: AniListBrowsePage(media: topRated)
+        )
+    }
+
+    /// One MangaBaka search → a quality-filtered, client-side-ranked rail.
+    private func mangaBakaRail(type: String, sortByRating: Bool) async throws -> [AniListBrowseMedia] {
+        guard var comps = URLComponents(string: "https://api.mangabaka.dev/v1/series/search") else {
+            throw HelperError(error: "Bad MangaBaka URL")
         }
+        // `q` is required — a broad token matches the bulk of the catalogue.
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: "a"),
+            URLQueryItem(name: "type", value: type),
+            URLQueryItem(name: "content_rating", value: "safe"),
+            URLQueryItem(name: "limit", value: "30"),
+        ]
+        guard let url = comps.url else { throw HelperError(error: "Bad MangaBaka URL") }
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["query": query])
         let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
-            throw HelperError(error: "AniList feed unavailable")
+            throw HelperError(error: "MangaBaka feed unavailable")
         }
-        let decoded = try JSONDecoder().decode(AniListBrowseResponse.self, from: data)
-        guard let payload = decoded.data else {
-            throw HelperError(error: "AniList returned no data")
+        let decoded = try JSONDecoder().decode(MangaBakaSearchResponse.self, from: data)
+        let usable = (decoded.data ?? []).filter { $0.isUsable }
+        let sorted = usable.sorted { lhs, rhs in
+            sortByRating
+                ? (lhs.rating ?? 0) > (rhs.rating ?? 0)
+                : lhs.popularityScore > rhs.popularityScore
         }
-        return payload
+        return sorted.prefix(24).map { $0.toBrowseMedia() }
     }
 
     // MARK: Tracker (AniList)

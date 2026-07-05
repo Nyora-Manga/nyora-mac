@@ -131,10 +131,11 @@ struct HistoryView: View {
     }
 }
 
-/// AniList-powered discovery feed. Three batched sections — Trending Now,
-/// Popular This Season, Top Rated — pulled from AniList's public GraphQL.
-/// NSFW titles are filtered server-side when the library NSFW filter is on.
-/// Tapping a cover runs a global search so the user can open it in a source.
+/// MangaBaka-powered discovery feed. Three sections — Trending Now, Popular
+/// Manhwa, Top Rated — built from broad MangaBaka searches ranked client-side
+/// by popularity / rating. Every search is content_rating=safe, so NSFW titles
+/// never reach the feed. Tapping a cover runs a global search so the user can
+/// open it in a source.
 @MainActor
 struct FeedView: View {
     @EnvironmentObject var appState: AppState
@@ -171,12 +172,12 @@ struct FeedView: View {
                     EmptyStateView(
                         icon: "newspaper",
                         title: "Nothing in the feed yet",
-                        message: "Refresh to load trending manga from AniList."
+                        message: "Refresh to load popular manga from MangaBaka."
                     )
                     .frame(minHeight: 240)
                 } else {
-                    section("Trending Now", "What the community is reading right now", trending)
-                    section("Popular This Season", "Most-followed ongoing series", popular)
+                    section("Trending Now", "Most popular manga right now", trending)
+                    section("Popular Manhwa", "Trending webtoons & manhwa", popular)
                     section("Top Rated", "Highest-scored manga of all time", topRated)
                 }
             }
@@ -205,7 +206,7 @@ struct FeedView: View {
             Text("Feed")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
-            Text("Discover what's trending on AniList.")
+            Text("Discover what's popular on MangaBaka.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

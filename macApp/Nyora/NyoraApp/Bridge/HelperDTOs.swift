@@ -381,3 +381,87 @@ struct AniListBrowseMedia: Decodable, Identifiable, Hashable {
     var coverURL: String { coverImage?.large ?? "" }
     var topGenre: String? { genres?.first }
 }
+
+// MARK: - MangaBaka discovery feed (public REST — search-first, ranked client-side)
+//
+// AniList disabled its public API, so the discovery feed now comes from the
+// MangaBaka series database (https://api.mangabaka.dev). The API is search-first
+// (there is NO trending/sort endpoint), so we fetch broad/filtered searches and
+// rank them client-side by global popularity or rating. Response shape:
+//   { status, pagination, data:[ series ] }
+// Each series is mapped onto the existing `AniListBrowseMedia` shape so the
+// FeedView UI is unchanged.
+
+struct MangaBakaSearchResponse: Decodable {
+    let data: [MangaBakaSeries]?
+}
+
+struct MangaBakaImage: Decodable { let x1: String? }
+struct MangaBakaRaw: Decodable { let url: String? }
+
+struct MangaBakaCover: Decodable {
+    let x350: MangaBakaImage?
+    let x250: MangaBakaImage?
+    let raw: MangaBakaRaw?
+}
+
+struct MangaBakaPopularityGlobal: Decodable { let current: Int? }
+struct MangaBakaPopularity: Decodable { let global: MangaBakaPopularityGlobal? }
+
+struct MangaBakaSeries: Decodable {
+    let id: Int?
+    let title: String?
+    let romanizedTitle: String?
+    let nativeTitle: String?
+    let cover: MangaBakaCover?
+    let genres: [String]?
+    let rating: Double?
+    let popularity: MangaBakaPopularity?
+    let type: String?
+    let state: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, cover, genres, rating, popularity, type, state
+        case romanizedTitle = "romanized_title"
+        case nativeTitle = "native_title"
+    }
+
+    /// Sortable global-popularity number pulled out of the nested shape.
+    var popularityScore: Int { popularity?.global?.current ?? 0 }
+
+    /// Best available cover: prefer CDN thumbnails, fall back to the raw image.
+    var coverURL: String { cover?.x350?.x1 ?? cover?.x250?.x1 ?? cover?.raw?.url ?? "" }
+
+    var displayTitle: String { title ?? romanizedTitle ?? nativeTitle ?? "Untitled" }
+
+    /// Worth showing only with a cover and a real title — the DB is full of
+    /// 1–2 char placeholder / merged entries we don't want on the grid.
+    var isUsable: Bool {
+        state != "merged"
+            && !coverURL.isEmpty
+            && (title ?? "").trimmingCharacters(in: .whitespaces).count >= 3
+    }
+
+    /// "school_life" -> "School Life"
+    private static func prettyGenre(_ g: String) -> String {
+        g.split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    /// Map onto the AniList-media shape the FeedView already renders.
+    func toBrowseMedia() -> AniListBrowseMedia {
+        AniListBrowseMedia(
+            id: id ?? abs(displayTitle.hashValue),
+            title: AniListTitle(
+                romaji: romanizedTitle ?? displayTitle,
+                english: title ?? displayTitle,
+                native: nativeTitle
+            ),
+            coverImage: AniListCover(large: coverURL),
+            isAdult: false,
+            genres: (genres ?? []).map { Self.prettyGenre($0) },
+            averageScore: rating.map { Int($0.rounded()) }
+        )
+    }
+}
