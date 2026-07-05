@@ -166,17 +166,23 @@ struct PagedReaderV2: View {
     private var pageCounter: some View {
         VStack {
             Spacer()
-            ReaderSeekbar(
-                page: Binding(
-                    get: { appState.readerPageIndex },
-                    set: { idx in
-                        appState.readerPageIndex = idx
-                        Task { await appState.persistReaderPosition() }
-                    }
-                ),
-                pageCount: chapter.pages.count,
-                rtl: isRTL
-            )
+            // Seekbar + page counter are sibling floating glass shapes: cluster
+            // them in a single GlassEffectContainer so they blend/morph together
+            // instead of double-frosting. ReaderSeekbar already carries its own
+            // .glassEffect (from GlassStyles), so we add NO per-child glass here.
+            GlassEffectContainer(spacing: 8) {
+                ReaderSeekbar(
+                    page: Binding(
+                        get: { appState.readerPageIndex },
+                        set: { idx in
+                            appState.readerPageIndex = idx
+                            Task { await appState.persistReaderPosition() }
+                        }
+                    ),
+                    pageCount: chapter.pages.count,
+                    rtl: isRTL
+                )
+            }
             .padding(.bottom, 18)
         }
     }

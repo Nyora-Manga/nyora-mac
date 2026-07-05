@@ -61,7 +61,10 @@ struct ReaderSidebar: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
-                    .background(.quaternary.opacity(0.4),
+                    // Inline dropdown affordance over the opaque sidebar strip —
+                    // NOT floating chrome, so a plain card-surface fill (no glass,
+                    // no material) keeps it legible without double-frosting.
+                    .background(Color.cardSurface,
                                 in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
@@ -212,9 +215,8 @@ struct ReaderSidebar: View {
                 Text("\(index + 1)")
                     .font(.caption2.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.black.opacity(0.6),
-                                in: Capsule(style: .continuous))
-                    .foregroundStyle(.white)
+                    // Floating page-number chip over the thumbnail image → real glass.
+                    .adaptiveGlass(.capsule)
                     .padding(6)
 
                 // Translation status badge — top trailing corner
@@ -224,7 +226,8 @@ struct ReaderSidebar: View {
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, .green)
                         .padding(5)
-                        .background(.black.opacity(0.45), in: Circle())
+                        // Floating status chip over the thumbnail image → real glass.
+                        .adaptiveGlass(.circle)
                         .padding(5)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }

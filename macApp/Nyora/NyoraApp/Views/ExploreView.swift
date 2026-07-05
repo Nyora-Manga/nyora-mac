@@ -579,9 +579,7 @@ struct ExploreView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
-        .overlay(alignment: .leading) { Divider() }
-        .shadow(color: .black.opacity(0.25), radius: 18, x: -6)
+        .adaptiveGlass(.rect(cornerRadius: 20))
     }
 
     @ViewBuilder

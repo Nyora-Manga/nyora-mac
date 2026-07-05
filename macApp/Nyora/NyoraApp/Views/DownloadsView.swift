@@ -76,8 +76,11 @@ struct DownloadsView: View {
                 Image(systemName: "gearshape")
                     .imageScale(.large)
                     .foregroundStyle(.secondary)
-                    .padding(8)
-                    .contentShape(Rectangle())
+                    .padding(10)
+                    .contentShape(Circle())
+                    // Circular floating glass FAB (interactive), routed through
+                    // the shared helper so reduce-transparency is respected.
+                    .adaptiveGlass(.circle, interactive: true)
             }
             .buttonStyle(.plain)
             .help("Download settings")

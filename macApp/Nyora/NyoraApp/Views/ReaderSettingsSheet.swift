@@ -18,7 +18,10 @@ struct ReaderSettingsSheet: View {
             .padding(18)
         }
         .frame(minWidth: 460, idealWidth: 500, minHeight: 560, idealHeight: 640)
-        .background(.ultraThinMaterial)
+        // Sheets adopt Liquid Glass automatically on macOS 26 — no manual
+        // material here (that would double-frost). Give the scrolling content
+        // a plain opaque base instead.
+        .background(Color.appBackground)
         .toolbar {
             ToolbarItem {
                 Button("Done") { dismiss() }
@@ -43,7 +46,7 @@ struct ReaderSettingsSheet: View {
                 Task { await appState.toggleCurrentPageBookmark() }
             }
         }
-        .glassCard(cornerRadius: 12)
+        .settingsCard(cornerRadius: 12)
     }
 
     private var readMode: some View {
@@ -58,7 +61,7 @@ struct ReaderSettingsSheet: View {
                     ) { appState.readerMode = mode }
                 }
             }
-            .glassCard(cornerRadius: 14)
+            .settingsCard(cornerRadius: 14)
             Text("The chosen mode will be remembered for this app.")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
@@ -89,7 +92,7 @@ struct ReaderSettingsSheet: View {
                     )
                 )
             }
-            .glassCard(cornerRadius: 14)
+            .settingsCard(cornerRadius: 14)
         }
     }
 
@@ -182,7 +185,7 @@ struct ReaderSettingsSheet: View {
                     )
                 )
             }
-            .glassCard(cornerRadius: 14)
+            .settingsCard(cornerRadius: 14)
         }
     }
 
@@ -349,6 +352,24 @@ private struct ReadModeButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension View {
+    /// Plain grouped content panel for use INSIDE an auto-glass sheet.
+    /// Not glass (that would double-frost on macOS 26) — an opaque
+    /// `cardSurface` fill with a hairline border, matching the design system.
+    func settingsCard(cornerRadius: CGFloat) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.cardSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 

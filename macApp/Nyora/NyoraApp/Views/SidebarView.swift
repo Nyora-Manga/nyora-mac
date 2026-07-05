@@ -125,19 +125,7 @@ private struct AnimeSidebarRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(rowBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        // 2-layer selected shadow: near (accent) + far (purple haze)
-        .shadow(
-            color: isSelected ? Color.appAccent.opacity(0.20) : .clear,
-            radius: isSelected ? 10 : 0,
-            y: isSelected ? 4 : 0
-        )
-        .shadow(
-            color: isSelected ? Color.appAccent.opacity(0.10) : .clear,
-            radius: isSelected ? 18 : 0,
-            y: isSelected ? 6 : 0
-        )
+        .modifier(RowSelectionGlass(isSelected: isSelected, isHovered: isHovered))
         .scaleEffect(isSelected ? 1.0 : (isHovered ? 1.01 : 1.0))
         .animation(.hoverSpring, value: isSelected)
         .animation(.hoverSpring, value: isHovered)
@@ -188,45 +176,36 @@ private struct AnimeSidebarRow: View {
         }
     }
 
-    // MARK: Row background
+}
 
-    @ViewBuilder
-    private var rowBackground: some View {
+// MARK: - Row selection glass
+
+/// Selected rows become an accent-tinted floating glass pill; hovered rows get a
+/// subtle fill. Routed through `adaptiveGlass` so reduce-transparency is honoured.
+@MainActor
+private struct RowSelectionGlass: ViewModifier {
+    let isSelected: Bool
+    let isHovered: Bool
+
+    func body(content: Content) -> some View {
         if isSelected {
-            ZStack {
-                // Base accent sweep leading -> trailing
-                LinearGradient(
-                    colors: [
-                        Color.appAccent.opacity(0.28),
-                        Color.appAccent.opacity(0.12),
-                        Color.clear
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                // Aurora glow spot anchored at the leading edge for organic depth
-                RadialGradient(
-                    colors: [
-                        Color.appAccent.opacity(0.30),
-                        Color.appAccent.opacity(0.10),
-                        .clear
-                    ],
-                    center: .leading,
-                    startRadius: 0,
-                    endRadius: 80
-                )
-            }
+            content
+                .adaptiveGlass(.rect(cornerRadius: 12), tint: Color.appAccent, interactive: true)
         } else if isHovered {
-            LinearGradient(
-                colors: [
-                    Color.primary.opacity(0.08),
-                    Color.primary.opacity(0.03)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
+            content
+                .background(
+                    LinearGradient(
+                        colors: [
+                            Color.primary.opacity(0.08),
+                            Color.primary.opacity(0.03)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
         } else {
-            Color.clear
+            content
         }
     }
 }
@@ -280,7 +259,6 @@ private struct SectionDivider: View {
 struct SidebarView: View {
     @Binding var selection: NavDestination
     @EnvironmentObject var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -358,38 +336,9 @@ struct SidebarView: View {
                 .padding(.bottom, 12)
             }
         }
-        .background(
-            ZStack {
-                Color(.windowBackgroundColor)
-                if colorScheme == .dark {
-                    // Aurora spot 1 — bright accent anchored topLeading, eased falloff
-                    RadialGradient(
-                        colors: [
-                            appState.activeCoverAccentPrimary.opacity(0.14),
-                            appState.activeCoverAccentPrimary.opacity(0.07),
-                            Color.appAccent.opacity(0.03),
-                            .clear
-                        ],
-                        center: .topLeading,
-                        startRadius: 0,
-                        endRadius: 320
-                    )
-                    // Aurora spot 2 — dimmer accent pool anchored bottomTrailing
-                    RadialGradient(
-                        colors: [
-                            Color.appAccent.opacity(0.07),
-                            Color.appAccent.opacity(0.03),
-                            .clear
-                        ],
-                        center: .bottomTrailing,
-                        startRadius: 0,
-                        endRadius: 240
-                    )
-                }
-            }
-            .animation(.easeInOut(duration: 0.8), value: appState.activeCoverAccentPrimary)
-            .ignoresSafeArea()
-        )
+        // Sidebar column adopts Liquid Glass automatically in NavigationSplitView on
+        // macOS 26 — no opaque fill here. Let content extend under the glass chrome.
+        .backgroundExtensionEffect()
     }
 
     // MARK: - Logic

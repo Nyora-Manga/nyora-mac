@@ -385,7 +385,9 @@ struct ColorCorrectionSheet: View {
             }
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 600, idealHeight: 720)
-        .background(.ultraThinMaterial)
+        // Sheets adopt Liquid Glass automatically on macOS 26 — no manual
+        // material here. Opaque base for the scrolling content instead.
+        .background(Color.appBackground)
         .onAppear { loadInitialAdjustments() }
     }
 
@@ -402,7 +404,9 @@ struct ColorCorrectionSheet: View {
                 .disabled(working.isNeutral)
             Button("Done") { commitAndDismiss() }
                 .keyboardShortcut(.return, modifiers: [])
-                .buttonStyle(.borderedProminent)
+                // Primary/accent action — native Liquid Glass prominent style
+                // (tints from the app-wide .tint; don't double-tint).
+                .buttonStyle(.glassProminent)
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
     }
@@ -446,7 +450,7 @@ struct ColorCorrectionSheet: View {
         }
         .frame(maxWidth: .infinity)
         .padding(14)
-        .glassCard(cornerRadius: 14)
+        .colorPanel(cornerRadius: 14)
     }
 
     private func previewThumb(adjustments: ColorAdjustments) -> some View {
@@ -486,7 +490,7 @@ struct ColorCorrectionSheet: View {
                       value: $working.hue, range: -180...180, neutral: 0)
         }
         .padding(14)
-        .glassCard(cornerRadius: 14)
+        .colorPanel(cornerRadius: 14)
     }
 
     private func sliderRow(
@@ -564,11 +568,10 @@ struct ColorCorrectionSheet: View {
                 .font(.caption.weight(selected ? .semibold : .regular))
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .foregroundStyle(selected ? Color.white : Color.primary)
-                .background(
-                    selected ? AnyShapeStyle(Color.appAccent) : AnyShapeStyle(.thinMaterial),
-                    in: Capsule()
-                )
-                .overlay(Capsule().strokeBorder(Color.primary.opacity(selected ? 0 : 0.08), lineWidth: 0.5))
+                // Native Liquid Glass capsule — tinted + interactive when
+                // selected, neutral otherwise. Routed through the shared
+                // reduce-transparency helper for accessibility.
+                .adaptiveGlass(.capsule, tint: selected ? Color.appAccent : nil)
         }
         .buttonStyle(.plain)
     }
@@ -623,6 +626,24 @@ struct ColorCorrectionSheet: View {
             }
         }
         dismiss()
+    }
+}
+
+private extension View {
+    /// Plain grouped content panel for use INSIDE the auto-glass sheet.
+    /// Not glass (that would double-frost on macOS 26) — an opaque
+    /// `cardSurface` fill with a hairline border.
+    func colorPanel(cornerRadius: CGFloat) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.cardSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
