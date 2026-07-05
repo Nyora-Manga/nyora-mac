@@ -63,13 +63,8 @@ struct FavouritesView: View {
                 gridContent
             }
         }
+        .searchable(text: $appState.libraryQuery, prompt: "Search favourites")
         .toolbar {
-            ToolbarItem {
-                DarkGlassSearchField(
-                    text: $appState.libraryQuery,
-                    placeholder: "Search favourites"
-                )
-            }
             ToolbarItem {
                 Button {
                     Task { await appState.reloadFavourites() }
@@ -307,57 +302,6 @@ private struct FavouriteSpotlightHero: View {
         }
     }
 }
-// MARK: - Dark Glass Search Field
-
-@MainActor
-struct DarkGlassSearchField: View {
-    @Binding var text: String
-    let placeholder: String
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary.opacity(isFocused ? 0.85 : 0.45))
-                .animation(.easeOut(duration: 0.18), value: isFocused)
-
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: .regular, design: .rounded))
-                .foregroundStyle(.primary.opacity(0.88))
-                .focused($isFocused)
-                .tint(Color.appAccent.opacity(0.9))
-
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.primary.opacity(0.35))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .frame(minWidth: 140, idealWidth: 210, maxWidth: 320)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(
-                            isFocused ? Color.primary.opacity(0.22) : Color.primary.opacity(0.08),
-                            lineWidth: isFocused ? 1.0 : 0.7
-                        )
-                )
-        )
-        .animation(.easeOut(duration: 0.18), value: isFocused)
-    }
-}
-
 // MARK: - FavouriteCard
 
 @MainActor

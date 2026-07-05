@@ -9,42 +9,54 @@ struct GlobalSearchSheet: View {
     @State private var hasSearched = false
 
     var body: some View {
-        ZStack {
-            // Near-black immersive base in dark mode; adaptive in light mode
-            (colorScheme == .dark ? Color.black.opacity(0.96) : Color(.windowBackgroundColor).opacity(0.98))
-                .ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                // Near-black immersive base in dark mode; adaptive in light mode
+                (colorScheme == .dark ? Color.black.opacity(0.96) : Color(.windowBackgroundColor).opacity(0.98))
+                    .ignoresSafeArea()
 
-            // Glassy ultraThinMaterial overlay at low opacity
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .opacity(0.15)
-                .ignoresSafeArea()
-
-            // Dark-mode radial accent glow in top-leading corner
-            if colorScheme == .dark {
-                GeometryReader { geo in
-                    RadialGradient(
-                        colors: [Color.appAccent.opacity(0.06), .clear],
-                        center: .topLeading,
-                        startRadius: 0,
-                        endRadius: 350
-                    )
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .allowsHitTesting(false)
+                // Dark-mode radial accent glow in top-leading corner
+                if colorScheme == .dark {
+                    GeometryReader { geo in
+                        RadialGradient(
+                            colors: [Color.appAccent.opacity(0.06), .clear],
+                            center: .topLeading,
+                            startRadius: 0,
+                            endRadius: 350
+                        )
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .allowsHitTesting(false)
+                    }
+                    .ignoresSafeArea()
                 }
-                .ignoresSafeArea()
-            }
-
-            VStack(spacing: 0) {
-                header
-
-                // Thin separator — no system Divider, just spacing + a hairline
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 0.5)
-                    .padding(.horizontal, 16)
 
                 content
+            }
+            // Native Liquid Glass search field on macOS 26 — replaces the
+            // hand-built pill + TextField + material wash entirely.
+            .searchable(
+                text: $appState.globalSearchQuery,
+                placement: .toolbar,
+                prompt: "Search every source…"
+            )
+            .searchFocused($searchFocused)
+            .onSubmit(of: .search) {
+                hasSearched = true
+                Task { await appState.runGlobalSearch() }
+            }
+            .onChange(of: appState.globalSearchQuery) { _, q in
+                if q.isEmpty { hasSearched = false }
+            }
+            .toolbar {
+                if appState.isGlobalSearching {
+                    ToolbarItem {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                ToolbarItem {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.escape, modifiers: [])
+                }
             }
         }
         .frame(
@@ -52,88 +64,6 @@ struct GlobalSearchSheet: View {
             minHeight: 480, idealHeight: 640
         )
         .onAppear { searchFocused = true }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            // Magnifying glass icon
-            Image(systemName: "magnifyingglass")
-                .font(.title2)
-                .foregroundStyle(Color.primary.opacity(0.5))
-
-            // Search input
-            TextField("Search every source…", text: $appState.globalSearchQuery)
-                .textFieldStyle(.plain)
-                .font(.title3)
-                .foregroundStyle(.primary)
-                .focused($searchFocused)
-                .onSubmit {
-                    hasSearched = true
-                    Task { await appState.runGlobalSearch() }
-                }
-                .onChange(of: appState.globalSearchQuery) { _, q in
-                    if q.isEmpty { hasSearched = false }
-                }
-                .tint(Color.appAccent)
-
-            // Spinner while searching
-            if appState.isGlobalSearching {
-                ProgressView()
-                    .controlSize(.small)
-                    .colorScheme(.dark)
-                    .transition(.opacity.combined(with: .scale))
-            }
-
-            // Dismiss button
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(Color.primary.opacity(0.4))
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.escape, modifiers: [])
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-                .background(
-                    LinearGradient(
-                        colors: [Color.appAccent.opacity(0.07), .clear],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                )
-                // Faint topLeading accent glow spot for pill depth
-                .background(
-                    RadialGradient(
-                        colors: [Color.appAccent.opacity(0.10), Color.appAccent.opacity(0.03), .clear],
-                        center: .topLeading,
-                        startRadius: 0,
-                        endRadius: 220
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [Color.appAccent.opacity(0.22), Color.primary.opacity(0.06)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.6
-                        )
-                )
-        )
-        .padding(16)
     }
 
     // MARK: - Content

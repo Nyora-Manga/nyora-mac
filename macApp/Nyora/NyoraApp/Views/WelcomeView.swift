@@ -102,16 +102,13 @@ struct WelcomeView: View {
                             .font(.headline.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(.white.opacity(0.1), lineWidth: 1)
-                            }
                     }
-                    .buttonStyle(.plain)
+                    // Secondary action ON the glass panel — a bordered (not glass)
+                    // button; glass-on-glass would double-frost.
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .opacity(isBusy ? 0.5 : 1.0)
-                    
+
                     // Backup Restore
                     Button {
                         if !isBusy {
@@ -129,14 +126,9 @@ struct WelcomeView: View {
                         .font(.headline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(.white.opacity(0.1), lineWidth: 1)
-                        }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .opacity(isBusy ? 0.5 : 1.0)
                     .scaleEffect(appearing ? 1 : 0.9)
                     
@@ -172,22 +164,7 @@ struct WelcomeView: View {
                 .frame(maxWidth: 340)
             }
             .padding(60)
-            .background {
-                RoundedRectangle(cornerRadius: 40, style: .continuous)
-                    .fill(.regularMaterial)
-                    .shadow(color: .black.opacity(0.25), radius: 50, y: 25)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 40, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [.white.opacity(0.3), .clear, .white.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    }
-            }
+            .adaptiveGlass(.rect(cornerRadius: 40))
             .frame(maxWidth: 600)
         }
         .onAppear {

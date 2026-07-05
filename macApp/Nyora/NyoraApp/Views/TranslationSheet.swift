@@ -40,7 +40,10 @@ struct TranslationSheet: View {
                 footer
             }
             .frame(minWidth: 360, idealWidth: 440)
-            .background(.regularMaterial)
+            // Sheets adopt Liquid Glass automatically on macOS 26; the right
+            // pane is opaque content, not a floating inspector, so use a plain
+            // surface rather than a manual material (which would double-frost).
+            .background(Color.appBackground)
         }
         .frame(minWidth: 900, idealWidth: 1200, minHeight: 600, idealHeight: 800)
     }

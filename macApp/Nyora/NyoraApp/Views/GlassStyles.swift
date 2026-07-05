@@ -235,6 +235,61 @@ extension View {
     }
 }
 
+// MARK: - Adaptive Liquid Glass (shared helper)
+
+/// THE single design-system entry point for native macOS 26 Liquid Glass.
+///
+/// Every chrome/HUD/floating surface in the app routes through here so that:
+/// • reduce-transparency falls back to a solid `Color.cardSurface` fill + a
+///   0.5 pt hairline border instead of frosted glass (the app previously had
+///   ZERO accessibility handling — this is the one place that fixes it), and
+/// • the real `.glassEffect(_:in:)` is applied otherwise, optionally tinted
+///   with the live app accent and/or made interactive for tappable surfaces.
+///
+/// Groups that call `.glassEffect` directly (status banners, reader HUD,
+/// buttons/FABs) must funnel through `adaptiveGlass(_:tint:interactive:)`
+/// rather than raw `.glassEffect`, so the whole app respects the setting for
+/// free. Never nest one glass surface inside another — cluster siblings in a
+/// `GlassEffectContainer` instead.
+@MainActor
+struct AdaptiveGlassModifier<S: Shape>: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let shape: S
+    let tint: Color?
+    let interactive: Bool
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            // Accessible fallback: opaque surface + hairline border, no blur.
+            content
+                .background(shape.fill(Color.cardSurface))
+                .overlay(shape.stroke(Color.adaptiveSeparator, lineWidth: 0.5))
+        } else if let tint {
+            if interactive {
+                content.glassEffect(.regular.tint(tint).interactive(), in: shape)
+            } else {
+                content.glassEffect(.regular.tint(tint), in: shape)
+            }
+        } else if interactive {
+            content.glassEffect(.regular.interactive(), in: shape)
+        } else {
+            content.glassEffect(.regular, in: shape)
+        }
+    }
+}
+
+extension View {
+    /// Apply native Liquid Glass clipped to `shape`, respecting reduce-transparency.
+    ///
+    /// - Parameters:
+    ///   - shape: The glass boundary — use `.rect(cornerRadius:)` or `.capsule`.
+    ///   - tint: Optional accent tint; pass `Color.appAccent` for accent surfaces.
+    ///   - interactive: `true` for tappable surfaces (adds the interactive highlight).
+    func adaptiveGlass<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = false) -> some View {
+        modifier(AdaptiveGlassModifier(shape: shape, tint: tint, interactive: interactive))
+    }
+}
+
 // MARK: - View Extension Entry-Points
 
 extension View {
@@ -313,44 +368,32 @@ extension View {
 
 // MARK: - GlassCardModifier
 
-/// MODERN aurora card surface:
-/// • Layered-radial AuroraFill background (single-hue accent depth)
-/// • Conic AngularGradient border (rotating-light edge)
-/// • Inner top highlight (accent 0.14 → clear) height 40
-/// • 2-layer shadow: near black + far accent
+/// Main panel surface — big cards, sheet bodies, content frames.
+///
+/// Native macOS 26 Liquid Glass via the shared `adaptiveGlass` helper (which
+/// falls back to a solid surface under reduce-transparency). The old faux
+/// AuroraFill + conic border + hand-rolled shadows are gone — glass supplies
+/// its own depth and edge lighting.
 @MainActor
 struct GlassCardModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .background(AuroraFill(accent: .appAccent, cornerRadius: cornerRadius))
-            .conicBorder(cornerRadius: cornerRadius, accent: .appAccent)
-            // Inner top-edge accent highlight
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [Color.appAccent.opacity(0.14), Color.clear],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-                .frame(height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .allowsHitTesting(false)
-            }
-            // Near shadow
-            .shadow(color: .black.opacity(0.20), radius: 12, x: 0, y: 5)
-            // Far ambient accent shadow
-            .shadow(color: Color.appAccent.opacity(0.12), radius: 20, x: 0, y: 8)
+        content.adaptiveGlass(.rect(cornerRadius: cornerRadius))
     }
 }
 
 // MARK: - GlassRowModifier
 
-/// AWWWARDS-level row surface:
-/// • Selected: appAccent gradient leading→trailing (0.22 → 0.08) + appAccent shadow
-/// • Hover: primary gradient (0.08 → 0.03)
-/// • Resting: primary gradient (0.05 → 0.02)
-/// • Gradient border always present
+/// Subtle hover / selected affordance — list rows, sidebar items.
+///
+/// Rows are usually list *selection*, so this deliberately avoids frosting the
+/// resting/hover state (which would double-frost inside an already-glass
+/// sidebar). Only the *selected* state promotes to real interactive glass;
+/// hover/resting stay a very light plain fill.
+///
+/// NOTE: Group 5 may bypass this entirely and rely on native `List` selection
+/// styling on macOS 26 — this modifier is the fallback for custom row stacks.
 @MainActor
 struct GlassRowModifier: ViewModifier {
     let selected: Bool
@@ -358,73 +401,24 @@ struct GlassRowModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .background(
+        if selected {
+            content.adaptiveGlass(.rect(cornerRadius: cornerRadius), interactive: true)
+        } else {
+            content.background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        selected
-                            ? AnyShapeStyle(
-                                LinearGradient(
-                                    colors: [
-                                        Color.appAccent.opacity(0.22),
-                                        Color.appAccent.opacity(0.08),
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                              )
-                            : isHovered
-                                ? AnyShapeStyle(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.primary.opacity(0.08),
-                                            Color.primary.opacity(0.03),
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                  )
-                                : AnyShapeStyle(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.primary.opacity(0.05),
-                                            Color.primary.opacity(0.02),
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                  )
-                    )
+                    .fill(Color.primary.opacity(isHovered ? 0.06 : 0.0))
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.primary.opacity(selected ? 0.14 : (isHovered ? 0.10 : 0.06)),
-                                Color.primary.opacity(selected ? 0.05 : (isHovered ? 0.04 : 0.02)),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.5
-                    )
-            )
-            // Accent shadow when selected
-            .shadow(
-                color: selected ? Color.appAccent.opacity(0.28) : .clear,
-                radius: selected ? 10 : 0,
-                x: 0,
-                y: selected ? 4 : 0
-            )
+        }
     }
 }
 
 // MARK: - GlassChipModifier
 
-/// AWWWARDS-level chip/tag pill:
-/// • 2-stop gradient fill (0.10 → 0.05)
-/// • Gradient border top→bottom
+/// Chip / tag pill — native Liquid Glass capsule (falls back to a solid
+/// capsule under reduce-transparency). Padding preserved from the faux look.
+///
+/// The `cornerRadius` parameter is retained for source compatibility; chips are
+/// always capsules, so the value is not used for the glass shape.
 @MainActor
 struct GlassChipModifier: ViewModifier {
     let cornerRadius: CGFloat
@@ -432,52 +426,33 @@ struct GlassChipModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.primary.opacity(0.10),
-                                Color.primary.opacity(0.05),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.primary.opacity(0.18),
-                                Color.primary.opacity(0.06),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.6
-                    )
-            )
+            .adaptiveGlass(.capsule)
     }
 }
 
 // MARK: - GlassOverlayModifier
 
+/// Floating overlay surface — reader seekbar/HUD pills, page counters, status
+/// banners. This is the single most important migration: the reader HUD now
+/// rides on real Liquid Glass instead of a black 0.48 scrim.
+///
+/// A `cornerRadius >= 999` is treated as a fully-rounded capsule (callers pass
+/// `999` for pill shapes); anything else clips to a rounded rect. Routes
+/// through `adaptiveGlass`, so reduce-transparency is respected automatically.
+///
+/// NOTE: when several of these pills float together (seekbar + page counter,
+/// stacked HUD controls) Group 3 wraps them in a single `GlassEffectContainer`
+/// so they blend/morph rather than double-frost.
 @MainActor
 struct GlassOverlayModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.48))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-            )
+        if cornerRadius >= 999 {
+            content.adaptiveGlass(.capsule)
+        } else {
+            content.adaptiveGlass(.rect(cornerRadius: cornerRadius))
+        }
     }
 }
 
@@ -708,57 +683,15 @@ struct MangaBadgeModifier: ViewModifier {
 
 // MARK: - GlassSectionModifier
 
-/// Section container glass surface — slightly stronger fill than glassCard,
-/// intended for grouping rows or grids within a larger layout.
+/// Section container glass surface — an accent-tinted grouping surface for rows
+/// or grids within a larger layout. Native Liquid Glass tinted with the live
+/// app accent (falls back to a solid surface under reduce-transparency).
 @MainActor
 struct GlassSectionModifier: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            stops: [
-                                .init(color: Color.appAccent.opacity(0.18), location: 0.0),
-                                .init(color: Color.appAccent.opacity(0.08), location: 0.5),
-                                .init(color: Color.appAccent.opacity(0.02), location: 1.0),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.appAccent.opacity(0.32),
-                                Color.appAccent.opacity(0.08),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            // Inner top-edge accent highlight
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [Color.appAccent.opacity(0.16), Color.clear],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-                .frame(height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .allowsHitTesting(false)
-            }
-            // Near shadow
-            .shadow(color: .black.opacity(0.20), radius: 12, x: 0, y: 5)
-            // Far ambient accent shadow
-            .shadow(color: Color.appAccent.opacity(0.12), radius: 20, x: 0, y: 8)
+        content.adaptiveGlass(.rect(cornerRadius: cornerRadius), tint: .appAccent)
     }
 }
 

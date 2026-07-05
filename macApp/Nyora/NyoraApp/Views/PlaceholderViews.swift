@@ -649,14 +649,14 @@ private struct LocalEntryRow: View {
 
                 Spacer()
 
-                // Size chip badge (glass)
+                // Size chip: inline metadata, not a floating surface — a subtle
+                // solid capsule rather than glass (avoids frosting a static row).
                 Text(formatter.string(fromByteCount: entry.sizeBytes))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
+                    .background(Color.cardSurface, in: Capsule())
 
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
@@ -919,17 +919,11 @@ private struct StatsCard: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         )
-        .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [Color.white.opacity(0.20), Color.clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 28)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .legacyConicBorder()
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        // Native Liquid Glass supplies its own edge lighting + top highlight,
+        // so the hand-rolled white highlight overlay and conic border are gone.
+        // The decorative aurora fill above stays as the card's colour bed; the
+        // accent-tinted glass floats over it as the actual card surface.
+        .adaptiveGlass(.rect(cornerRadius: 18), tint: Color.appAccent)
         .shadow(color: (gradient.first ?? Color.appAccent).opacity(0.30), radius: 12, y: 5)
         .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
     }
@@ -941,52 +935,6 @@ private struct StatsCard: View {
     private var statsBaseBottom: Color {
         if gradient.count > 1 { return gradient[1] }
         return (gradient.first ?? Color.appAccent).opacity(0.45)
-    }
-}
-
-/// Modern angular/conic border modifier — a rotating-light edge on macOS 15+,
-/// gracefully degrading to a straight vertical accent stroke on macOS 14.
-/// Single-hue: all stops derive from `Color.appAccent`.
-@MainActor
-private struct LegacyConicBorderModifier: ViewModifier {
-    var cornerRadius: CGFloat = 18
-    var lineWidth: CGFloat = 0.8
-
-    func body(content: Content) -> some View {
-        content.overlay {
-            if #available(macOS 15.0, *) {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        AngularGradient(
-                            stops: [
-                                .init(color: Color.white.opacity(0.40), location: 0.00),
-                                .init(color: Color.appAccent.opacity(0.10), location: 0.25),
-                                .init(color: Color.white.opacity(0.28), location: 0.50),
-                                .init(color: Color.appAccent.opacity(0.08), location: 0.75),
-                                .init(color: Color.white.opacity(0.40), location: 1.00)
-                            ],
-                            center: .center
-                        ),
-                        lineWidth: lineWidth
-                    )
-            } else {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.7
-                    )
-            }
-        }
-    }
-}
-
-private extension View {
-    func legacyConicBorder(cornerRadius: CGFloat = 18, lineWidth: CGFloat = 0.8) -> some View {
-        modifier(LegacyConicBorderModifier(cornerRadius: cornerRadius, lineWidth: lineWidth))
     }
 }
 
@@ -1907,7 +1855,8 @@ struct ReaderView: View {
         .frame(width: 320)
         .frame(maxHeight: .infinity, alignment: .top)
         .frame(idealHeight: 500)
-        .glassCard(cornerRadius: 16)
+        // Genuine detached floating panel — explicit native glass surface.
+        .adaptiveGlass(.rect(cornerRadius: 16))
         .shadow(color: .black.opacity(0.2), radius: 15, x: 0, y: 10)
     }
 }
@@ -2124,24 +2073,9 @@ private struct ReaderEmptyLanding: View {
                 }
             }
             .padding(16)
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(.regularMaterial)
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.primary.opacity(0.06), Color.primary.opacity(0.02)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            )
+            // Floating card over the blurred cover mosaic — native glass replaces
+            // the material + gradient + hairline border it used to hand-roll.
+            .adaptiveGlass(.rect(cornerRadius: 18))
         }
     }
 }

@@ -23,12 +23,16 @@ struct TranslationDebugBar: View {
         .animation(.easeInOut(duration: 0.22), value: appState.translationStage)
     }
 
-    @ViewBuilder
     private var content: some View {
-        if case let .failed(reason) = appState.translationStage {
-            failureBanner(reason: reason)
-        } else {
-            stageStrip
+        // stageStrip and failureBanner are mutually exclusive but share this one
+        // floating HUD slot — cluster them in a single GlassEffectContainer so the
+        // strip morphs into the banner (and back) instead of double-frosting.
+        GlassEffectContainer(spacing: 8) {
+            if case let .failed(reason) = appState.translationStage {
+                failureBanner(reason: reason)
+            } else {
+                stageStrip
+            }
         }
     }
 
@@ -51,8 +55,7 @@ struct TranslationDebugBar: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).strokeBorder(.quaternary, lineWidth: 0.5))
+        .adaptiveGlass(.capsule)
         .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 4)
     }
 
@@ -77,8 +80,7 @@ struct TranslationDebugBar: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).strokeBorder(.red.opacity(0.4), lineWidth: 0.75))
+        .adaptiveGlass(.capsule, tint: .red)
         .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 4)
     }
 

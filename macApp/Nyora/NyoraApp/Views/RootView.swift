@@ -53,6 +53,13 @@ struct RootView: View {
                     )
                 } detail: {
                     DetailContainerView(destination: selectedDestination)
+                        // Detail column keeps the opaque app background so its
+                        // cover art / content reads cleanly; the SIDEBAR column
+                        // stays material-free so it picks up macOS 26 auto-glass.
+                        .background(Color.appBackground.ignoresSafeArea())
+                        // Let detail cover art / hero art extend under the glass
+                        // sidebar for the native Liquid Glass edge-to-edge look.
+                        .backgroundExtensionEffect()
                         .navigationSplitViewColumnWidth(min: 480, ideal: 900)
                 }
             }
@@ -60,7 +67,10 @@ struct RootView: View {
         .navigationTitle(selectedDestination.title)
         .tint(appState.readerPrefs.effectiveAccentColor)
         .preferredColorScheme(appState.readerPrefs.effectiveAppearance)
-        .background(Color.appBackground.ignoresSafeArea())
+        // No root-level opaque background: the sidebar column must stay
+        // material-free to receive macOS 26 auto-glass. The DETAIL column
+        // carries `Color.appBackground` itself (see detail: closure above);
+        // WelcomeView draws its own background.
         .overlay(alignment: .bottom) {
             if let message = appState.statusMessage {
                 StatusBanner(message: message) { appState.clearMessage() }
@@ -170,42 +180,11 @@ struct StatusBanner: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
-        .background {
-            ZStack {
-                Capsule().fill(.ultraThinMaterial)
-                Capsule().fill(
-                    LinearGradient(
-                        colors: [Color.appAccent.opacity(0.08), .clear],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                // Faint topLeading accent glow spot for capsule depth
-                Capsule().fill(
-                    RadialGradient(
-                        colors: [
-                            Color.appAccent.opacity(0.14),
-                            Color.appAccent.opacity(0.04),
-                            .clear
-                        ],
-                        center: .topLeading,
-                        startRadius: 0,
-                        endRadius: 90
-                    )
-                )
-            }
-        }
-        .overlay(
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.appAccent.opacity(0.30), Color.primary.opacity(0.08)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-        )
+        // Native Liquid Glass capsule, accent-tinted, routed through the shared
+        // reduce-transparency helper (solid fallback when the user disables
+        // transparency). Replaces the old ultraThinMaterial + accent-gradient +
+        // conic-border faux-glass stack.
+        .adaptiveGlass(.capsule, tint: Color.appAccent)
         .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
         .shadow(color: Color.appAccent.opacity(0.12), radius: 24, y: 4)
         .frame(maxWidth: 500)
@@ -231,14 +210,14 @@ private struct BiometricLockOverlay: View {
 
     var body: some View {
         ZStack {
-            // Backdrop
+            // Backdrop — plain dimming scrim only. The card itself carries the
+            // native Liquid Glass; a material here would double-frost behind it.
             Color.black.opacity(0.6)
-                .background(.ultraThinMaterial)
                 .ignoresSafeArea()
 
-            // Card — content drives the size; the material/gradient/border
-            // are applied as a background so the card hugs its contents
-            // instead of a greedy shape stretching to fill the screen.
+            // Card — content drives the size. A single glass surface (the card);
+            // the action inside it is a solid button, so no GlassEffectContainer
+            // is needed (that's only for grouping multiple sibling glass shapes).
             VStack(spacing: 24) {
                 // Icon with pulsing glow ring
                 ZStack {
@@ -280,22 +259,12 @@ private struct BiometricLockOverlay: View {
                 Button("Unlock App") {
                     onAuthenticate()
                 }
+                // This button sits ON the glass card, so it must NOT itself be
+                // glass (glass-on-glass double-frosts). A solid accent prominent
+                // action is the correct pairing for a control inside a glass card.
                 .buttonStyle(.borderedProminent)
+                .tint(Color.appAccent)
                 .controlSize(.large)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.18),
-                                    Color.clear
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .allowsHitTesting(false)
-                }
                 .scaleEffect(isHoveringButton ? 1.04 : 1.0)
                 .animation(.spring(response: 0.28, dampingFraction: 0.6), value: isHoveringButton)
                 .onHover { hovering in
@@ -304,74 +273,11 @@ private struct BiometricLockOverlay: View {
             }
             .padding(40)
             .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
-            .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 28)
-                        .fill(.regularMaterial)
-                    // AuroraFill: bright accent spot topLeading + dimmer spot
-                    // bottomTrailing over the material for organic depth
-                    RoundedRectangle(cornerRadius: 28)
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.appAccent.opacity(0.20),
-                                    Color.appAccent.opacity(0.09),
-                                    Color.appAccent.opacity(0.03),
-                                    .clear
-                                ],
-                                center: .topLeading,
-                                startRadius: 0,
-                                endRadius: 320
-                            )
-                        )
-                    RoundedRectangle(cornerRadius: 28)
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.appAccent.opacity(0.10),
-                                    Color.appAccent.opacity(0.03),
-                                    .clear
-                                ],
-                                center: .bottomTrailing,
-                                startRadius: 0,
-                                endRadius: 260
-                            )
-                        )
-                }
-            }
-            .overlay {
-                // Conic angular sweep border — modern rotating-light edge
-                RoundedRectangle(cornerRadius: 28)
-                    .strokeBorder(
-                        AngularGradient(
-                            colors: [
-                                Color.appAccent.opacity(0.40),
-                                Color.appAccent.opacity(0.10),
-                                Color.appAccent.opacity(0.32),
-                                Color.appAccent.opacity(0.08),
-                                Color.appAccent.opacity(0.40)
-                            ],
-                            center: .center
-                        ),
-                        lineWidth: 1.0
-                    )
-            }
+            // Native Liquid Glass card, accent-tinted, via the shared
+            // reduce-transparency helper. Replaces the regularMaterial +
+            // aurora radial-gradient fills + conic angular-sweep border.
+            .adaptiveGlass(.rect(cornerRadius: 28), tint: Color.appAccent)
             .shadow(color: .black.opacity(0.4), radius: 40)
         }
     }
-}
-
-// MARK: - Visual Effect (keep as-is)
-
-@MainActor
-struct VisualEffectView: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.material = .windowBackground
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

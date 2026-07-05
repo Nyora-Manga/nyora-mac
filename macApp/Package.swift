@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Nyora",
     platforms: [
-        .macOS(.v15),
+        .macOS("26.0"),
     ],
     products: [
         .executable(name: "Nyora", targets: ["NyoraApp"]),
