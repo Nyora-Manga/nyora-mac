@@ -114,6 +114,26 @@ struct HelperCatalogEntry: Decodable, Identifiable, Hashable {
     let contentType: String
     let isBroken: Bool
     let isInstalled: Bool
+    /// Whether the source is adult-only. Emitted by `/sources/catalog`; decoded
+    /// defensively so an older helper that omits it still yields `false` rather
+    /// than failing the whole catalog decode. Drives the onboarding 18+ filter.
+    let isNsfw: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, lang, engine, contentType, isBroken, isInstalled, isNsfw
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        lang = try c.decode(String.self, forKey: .lang)
+        engine = try c.decode(String.self, forKey: .engine)
+        contentType = try c.decode(String.self, forKey: .contentType)
+        isBroken = (try? c.decode(Bool.self, forKey: .isBroken)) ?? false
+        isInstalled = (try? c.decode(Bool.self, forKey: .isInstalled)) ?? false
+        isNsfw = (try? c.decode(Bool.self, forKey: .isNsfw)) ?? false
+    }
 }
 
 struct HelperHistoryResponse: Decodable {

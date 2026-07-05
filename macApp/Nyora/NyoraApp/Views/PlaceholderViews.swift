@@ -2356,6 +2356,8 @@ struct SettingsView: View {
     @State private var kitsuPassword: String = ""
     @State private var manualTrackerToken: [String: String] = [:]
     @State private var trackerBusy: String? = nil
+    // Content & language preferences ("Re-run setup") sheet.
+    @State private var showPreferencesSheet = false
 
     var body: some View {
         HSplitView {
@@ -2371,6 +2373,13 @@ struct SettingsView: View {
         .task {
             cacheUsageBytes = URLCache.shared.currentDiskUsage
             dbSizeBytes = (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int) ?? 0
+        }
+        .sheet(isPresented: $showPreferencesSheet) {
+            PreferencesOnboardingView(context: .settings) {
+                showPreferencesSheet = false
+            }
+            .environmentObject(appState)
+            .frame(minWidth: 640, minHeight: 560)
         }
     }
 
@@ -2583,8 +2592,14 @@ struct SettingsView: View {
 
     private var sourcesSection: some View {
         VStack(spacing: 12) {
-            settingGroup("Filters") {
-                toggleRow("Hide NSFW sources", description: "Adult-flagged sources are removed from the catalog, sidebar, and global search.", isOn: $appState.hideNsfwSources)
+            settingGroup("Content & language") {
+                toggleRow("Show 18+ sources", description: "Include adult-only sources in Explore, the catalog, sidebar, and global search.", isOn: Binding(
+                    get: { !appState.hideNsfwSources },
+                    set: { appState.hideNsfwSources = !$0 }
+                ))
+                buttonRow("Re-run setup…", systemImage: "slider.horizontal.3") {
+                    showPreferencesSheet = true
+                }
             }
             settingGroup("Catalog") {
                 infoRow("Installed", value: "\(appState.sources.filter(\.isInstalled).count) of \(appState.sources.count)")

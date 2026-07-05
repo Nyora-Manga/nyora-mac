@@ -683,6 +683,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Onboarding / re-run setup: install every catalog entry in `entries` that
+    /// isn't already installed, then refresh the source + catalog lists. Existing
+    /// installed sources are left untouched (additive seed — we never uninstall).
+    /// Installs are fanned out in bounded batches so the localhost install storm
+    /// stays reasonable even when seeding the whole catalog.
+    func seedSources(from entries: [HelperCatalogEntry]) async {
+        let ids = entries.filter { !$0.isInstalled }.map(\.id)
+        let helper = self.helper
+        var index = 0
+        let batchSize = 8
+        while index < ids.count {
+            let batch = Array(ids[index..<min(index + batchSize, ids.count)])
+            await withTaskGroup(of: Void.self) { group in
+                for id in batch {
+                    group.addTask { _ = try? await helper.install(sourceId: id) }
+                }
+            }
+            index += batchSize
+        }
+        sources = (try? await helper.fetchSources()) ?? sources
+        catalog = (try? await helper.catalog()) ?? catalog
+    }
+
     func openCatalog() async {
         isCatalogPresented = true
         if catalog.isEmpty { await reloadCatalogEntries() }
