@@ -336,9 +336,9 @@ struct SidebarView: View {
                 .padding(.bottom, 12)
             }
         }
-        // Sidebar column adopts Liquid Glass automatically in NavigationSplitView on
-        // macOS 26 — no opaque fill here. Let content extend under the glass chrome.
-        .backgroundExtensionEffect()
+        // Sidebar column adopts Liquid Glass automatically in NavigationSplitView
+        // on macOS 26 — leave it material-free and DON'T add backgroundExtensionEffect
+        // (that mirrored the edges and made the sidebar look like a bordered card).
     }
 
     // MARK: - Logic

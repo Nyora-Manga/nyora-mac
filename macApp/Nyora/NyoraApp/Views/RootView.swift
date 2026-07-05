@@ -1,5 +1,22 @@
 import SwiftUI
 import LocalAuthentication
+import AppKit
+
+/// Makes the hosting window non-opaque so the sidebar's auto-glass AND the
+/// detail pane's material both frost the desktop behind the window — giving the
+/// whole window a consistent Liquid Glass feel (not just the sidebar).
+private struct TransparentWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async {
+            guard let win = v.window else { return }
+            win.isOpaque = false
+            win.backgroundColor = .clear
+        }
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
 
 @MainActor
 struct RootView: View {
@@ -53,13 +70,10 @@ struct RootView: View {
                     )
                 } detail: {
                     DetailContainerView(destination: selectedDestination)
-                        // Detail column keeps the opaque app background so its
-                        // cover art / content reads cleanly; the SIDEBAR column
-                        // stays material-free so it picks up macOS 26 auto-glass.
-                        .background(Color.appBackground.ignoresSafeArea())
-                        // Let detail cover art / hero art extend under the glass
-                        // sidebar for the native Liquid Glass edge-to-edge look.
-                        .backgroundExtensionEffect()
+                        // Detail column gets a translucent frosted background so the
+                        // right side carries the same Liquid Glass feel as the
+                        // auto-glass sidebar (instead of flat opaque black).
+                        .background(Rectangle().fill(.regularMaterial).ignoresSafeArea())
                         .navigationSplitViewColumnWidth(min: 480, ideal: 900)
                 }
             }
@@ -119,6 +133,7 @@ struct RootView: View {
                 isUnlocked = true
             }
         }
+        .background(TransparentWindowConfigurator())
     }
 
     private func authenticate() {
@@ -180,11 +195,11 @@ struct StatusBanner: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
-        // Native Liquid Glass capsule, accent-tinted, routed through the shared
-        // reduce-transparency helper (solid fallback when the user disables
-        // transparency). Replaces the old ultraThinMaterial + accent-gradient +
-        // conic-border faux-glass stack.
-        .adaptiveGlass(.capsule, tint: Color.appAccent)
+        // Native Liquid Glass capsule (UNTINTED so the frosted glass reads as
+        // glass — a strong accent tint made it look like a solid pill). The accent
+        // lives in the neon dot + text. Routed through the shared reduce-transparency
+        // helper (solid fallback when the user disables transparency).
+        .adaptiveGlass(.capsule)
         .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
         .shadow(color: Color.appAccent.opacity(0.12), radius: 24, y: 4)
         .frame(maxWidth: 500)
