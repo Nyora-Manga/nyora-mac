@@ -566,7 +566,7 @@ final class AppState: ObservableObject {
     /// Warm `URLCache.shared` with the first few pages of the next chapter
     /// so flipping forward feels instant.
     private func prefetchNextChapter() async {
-        let nextIdx = readerChapterIndex + 1
+        let nextIdx = readerChapterIndex + chapterNextStep
         guard readerChapters.indices.contains(nextIdx) else { return }
         let next = readerChapters[nextIdx]
         let sid = selectedSourceId ?? ""
@@ -633,8 +633,24 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Index step to the NEXT (higher-numbered) chapter. Source chapter arrays are
+    /// oldest-first on some sources (MangaDex) and newest-first on others (many
+    /// scanlation sites), so detect the ordering from chapter numbers instead of
+    /// assuming +1 is always "next": ascending (first < last) ⇒ +1, descending ⇒ -1.
+    var chapterNextStep: Int {
+        guard readerChapters.count >= 2 else { return 1 }
+        let a = readerChapters.first!.number
+        let b = readerChapters.last!.number
+        if a != b { return a < b ? 1 : -1 }
+        return 1
+    }
+    /// Whether a later / earlier chapter exists, honouring source order.
+    var hasNextChapter: Bool { readerChapters.indices.contains(readerChapterIndex + chapterNextStep) }
+    var hasPrevChapter: Bool { readerChapters.indices.contains(readerChapterIndex - chapterNextStep) }
+
+    /// `delta`: +1 = next chapter, -1 = previous (order-independent).
     func gotoChapterRelative(_ delta: Int) async {
-        let newIndex = readerChapterIndex + delta
+        let newIndex = readerChapterIndex + delta * chapterNextStep
         guard readerChapters.indices.contains(newIndex) else { return }
         // Forget the saved page so we start at 0 in the new chapter.
         if let details = activeMangaDetails {

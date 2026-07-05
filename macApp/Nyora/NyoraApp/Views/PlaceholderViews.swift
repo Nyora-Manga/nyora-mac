@@ -1345,9 +1345,10 @@ struct ReaderView: View {
                             switch appState.readerMode {
                             case .standard, .reversed:
                                 PagedReaderV2(chapter: chapter, controlsVisible: controlsVisible)
-                            case .vertical:
-                                PagedReaderV2(chapter: chapter, controlsVisible: controlsVisible)
-                            case .webtoon:
+                            case .vertical, .webtoon:
+                                // Both are continuous vertical scroll (matches the
+                                // other desktop platforms). Vertical was previously a
+                                // no-op that silently fell back to paged.
                                 WebtoonReaderV2(chapter: chapter, controlsVisible: controlsVisible)
                             }
                         }
@@ -1393,7 +1394,7 @@ struct ReaderView: View {
             Button {
                 Task { await appState.gotoChapterRelative(-1) }
             } label: { Label("Previous Chapter", systemImage: "backward") }
-            .disabled(appState.readerChapterIndex <= 0)
+            .disabled(!appState.hasPrevChapter)
 
             Text(chapter.title.isEmpty ? "Chapter" : chapter.title)
                 .font(.caption)
@@ -1403,7 +1404,7 @@ struct ReaderView: View {
             Button {
                 Task { await appState.gotoChapterRelative(1) }
             } label: { Label("Next Chapter", systemImage: "forward") }
-            .disabled(appState.readerChapterIndex >= appState.readerChapters.count - 1)
+            .disabled(!appState.hasNextChapter)
 
             Button {
                 Task { await appState.toggleCurrentPageBookmark() }
