@@ -1,0 +1,72 @@
+name: Release macOS
+
+# Builds Nyora.app and packages it as a DMG with a bundled JRE. The build script
+# ad-hoc signs the app so users can open it after the normal Gatekeeper allow
+# flow. Developer ID notarisation can be added later when certificates are set.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install DMG tooling
+        run: |
+          brew update
+          brew install create-dmg
+
+      - name: Build DMG
+        run: |
+          chmod +x macApp/scripts/build-dmg.sh
+          ./macApp/scripts/build-dmg.sh
+
+      - name: Stage DMG
+        run: |
+          mkdir -p dist
+          cp build/Nyora.dmg dist/Nyora-macOS.dmg
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nyora-macos-dmg
+          path: dist/Nyora-macOS.dmg
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Nyora for macOS ${{ github.ref_name }}
+          files: dist/Nyora-macOS.dmg
+          fail_on_unmatched_files: true
+          body: |
+            **Nyora for macOS ${{ github.ref_name }}**
+
+            - `Nyora-macOS.dmg` — bundled runtime, no Java install required.
+            - Ad-hoc signed; if macOS blocks first launch, right-click → Open.

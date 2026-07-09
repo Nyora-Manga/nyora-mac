@@ -121,7 +121,7 @@ final class AppState: ObservableObject {
     @Published var globalSearchQuery: String = ""
     @Published var globalSearchResults: [HelperGlobalSearchGroup] = []
 
-    // Supabase Sync
+    // Nyora Sync
     @Published var supabaseStatus: SupabaseStatusResponse? = nil
     @Published var isSupabaseSyncing: Bool = false
     @Published var isSupabaseSigningIn: Bool = false
@@ -1699,7 +1699,7 @@ private extension NSImage {
 }
 
 extension AppState {
-    // MARK: - Supabase Sync
+    // MARK: - Nyora Sync
 
     func refreshSupabaseStatus() async {
         do {
@@ -1735,7 +1735,7 @@ extension AppState {
                 await reloadBookmarks()
                 await reloadUpdates()
                 await reloadCategories()
-                self.statusMessage = "Signed in. Syncing library…"
+                self.statusMessage = "Signed in. Syncing your library…"
             } else {
                 self.statusMessage = "Sign-in failed"
             }
@@ -1757,13 +1757,13 @@ extension AppState {
 
     func supabaseSync() async {
         isSupabaseSyncing = true
-        statusMessage = "Syncing library with cloud..."
+        statusMessage = "Syncing your library..."
         defer { isSupabaseSyncing = false }
         do {
             try await helper.supabaseSync()
             await refreshSupabaseStatus()
             await reloadAllDataAfterSync()
-            statusMessage = "Sync complete"
+            statusMessage = "Nyora Sync complete"
         } catch {
             print("Supabase sync error: \(error)")
             statusMessage = "Sync failed: \(error.localizedDescription)"
@@ -1772,7 +1772,7 @@ extension AppState {
 
     func supabaseRestoreFromCloud() async {
         isSupabaseSyncing = true
-        statusMessage = "Restoring library from cloud..."
+        statusMessage = "Restoring your library..."
         defer { isSupabaseSyncing = false }
         do {
             try await helper.supabaseRestoreFromCloud()
