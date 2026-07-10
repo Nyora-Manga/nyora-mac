@@ -66,7 +66,7 @@ Nyora is a native macOS manga reader written from the ground up in SwiftUI for A
 | Translate | Whole-page AI translation typeset back over the original art, recognised fully on-device — Apple Vision OCR plus a bundled MangaOCR CoreML model. Press ⌘T for a side-by-side translated sheet. |
 | Download | Save chapters for offline reading; downloaded chapters open instantly with zero signal. |
 | Sources | Hundreds of online sources spanning manga, manhwa and manhua, browsable and searchable from one reader. |
-| Sync | Sign in with Google and your library, categories, history, bookmarks and progress follow you to every platform. Free, forever. |
+| Sync | Sign in to your free Nyora Cloud account (email and password) and your library, categories, history, bookmarks and progress follow you to every platform. Free, forever. |
 | Open Source | 100% free, ad-free, no tracking, no account to read. Apache-2.0, original code, auditable and community-driven. |
 
 ## Table of Contents
@@ -121,7 +121,7 @@ Browse, search and filter across hundreds of online sources spanning manga, manh
 
 ### Cloud Sync
 
-Sign in with Google and your library, custom categories, reading history, bookmarks and per-chapter progress follow you everywhere — Mac, Windows, Linux, Android, iOS and the Web. It is free, forever. Start a chapter on your phone at lunch and finish it on your Mac that night, picking up exactly where you left off. Sync is entirely optional: you never need an account just to read, and signing in only links the data needed to mirror your library across devices.
+Create a free Nyora Cloud account with just an email and password, and your library, custom categories, reading history, bookmarks and per-chapter progress follow you everywhere — Mac, Windows, Linux, Android, iOS and the Web. It is free, forever. Start a chapter on your phone at lunch and finish it on your Mac that night, picking up exactly where you left off. Sync is entirely optional: you never need an account just to read, and signing in only links the data needed to mirror your library across devices.
 
 ### Reader
 
@@ -150,7 +150,7 @@ What the macOS build does today:
 | BYOK LLM polish | Optional | Paste a Mistral or OpenAI key to refine the raw translation. |
 | Offline downloads | Yes | Chapters open instantly with no connection. |
 | Hundreds of sources | Yes | Tachiyomi/Kotatsu-compatible source layer. |
-| Cross-device sync | Yes | Google sign-in; free, optional. |
+| Cross-device sync | Yes | Nyora Cloud account (email + password); free, optional. |
 | External trackers | Yes | Progress syncs as you read. |
 | Page & webtoon reader | Yes | LTR / RTL / vertical, zoom, double-page spreads, per-title settings. |
 | Themes | Yes | Light / dark / system, dynamic colour correction. |
@@ -244,12 +244,11 @@ git submodule update --init --recursive
 
 ## Configuration
 
-Nyora ships with working defaults, so the app builds and runs from a fresh clone with no configuration needed. A couple of settings can be overridden locally if you want to point things at your own infrastructure:
+Nyora ships with working defaults, so the app builds and runs from a fresh clone with no configuration needed. One setting can be overridden locally if you want to point things at your own infrastructure:
 
-- **Google sign-in (sync).** The build bundles a Google **desktop / installed-app** OAuth client. By Google's design, an installed-app client secret is **not confidential** — it is embedded in distributed apps and is not treated as a secret — so shipping it in an open repository is fine. It exists only to enable optional cloud sync.
-- **Supabase sync override.** If you'd rather sync against your own Supabase project, drop a local `.env.sync` file with your own values; it overrides the bundled defaults at build/run time. This is purely optional and only matters if you're running your own sync backend.
+- **Nyora Cloud sync.** Sync and accounts run on **Nyora Cloud**, a self-hosted FastAPI backend at `https://stream.hasanraza.tech`. You sign in or register with an email and password (OAuth2 password flow, JWT under the hood) — there is no Google sign-in and no third-party account. If you'd rather run your own backend, point sync at your own Nyora Cloud instance by overriding the backend URL; it's the same open FastAPI service. This is purely optional and only matters if you're self-hosting sync.
 
-Neither of these is required to build, run, or read — they only configure optional cloud sync.
+None of this is required to build, run, or read — it only configures optional cloud sync.
 
 ## Tech Stack
 
@@ -306,7 +305,7 @@ Yes — completely free, ad-free, and with no tracking. There is nothing to buy 
 Yes, it's safe. macOS shows a Gatekeeper prompt for any app that isn't notarised through a paid Apple Developer account — that's about where the app came from, not whether it's harmful. Because Nyora is open-source, every line you run is public and auditable. Installing via Homebrew with `--no-quarantine` skips the prompt; with the direct `.dmg`, right-click → **Open** once and you're set. See [Installation](#installation).
 
 **Do I need an account?**
-No. You never need an account just to read. Signing in with Google is entirely optional and only enables cross-device sync.
+No. You never need an account just to read. Creating a free Nyora Cloud account (email and password) is entirely optional and only enables cross-device sync.
 
 **Will my data be private?**
 Yes. No ads, no analytics, no trackers. Your library is stored locally on your Mac. Text recognition for translation runs fully on-device — nothing about the page is sent off-device for OCR. Only recognised lines are sent for translation, through a free, keyless endpoint.
@@ -327,13 +326,13 @@ Recognition covers Japanese, Simplified Chinese, Korean and English. The transla
 Yes. Download chapters for offline reading and they open instantly with no connection. Once a page is loaded, on-device recognition works offline too; the translation call itself needs a connection unless the page is already cached.
 
 **Is sync private and required?**
-Sync is optional and free. You only sign in with Google if you want your library, history, bookmarks and progress to follow you across platforms — it links just the data needed to mirror your collection. You never need an account just to read.
+Sync is optional and free. You only create a Nyora Cloud account (email and password) if you want your library, history, bookmarks and progress to follow you across platforms — it links just the data needed to mirror your collection. You never need an account just to read.
 
 **Which platforms are supported, and do they share my library?**
 macOS, Windows, Linux, Android, iOS / iPadOS and the Web — all of which share one library and reading progress through cloud sync. This repository is the macOS app (Apple Silicon only).
 
 **Can I contribute to the shared engine?**
-Yes. The cross-platform engine, `nyora-shared`, is now a public, open-source repository ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Clone this repo with `--recurse-submodules` and you can build and modify the whole stack — the Swift app, the translation pipeline, and the engine itself. Engine-level PRs (the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, the downloads manager) are welcome upstream. See [Contributing](#contributing).
+Yes. The cross-platform engine, `nyora-shared`, is now a public, open-source repository ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Clone this repo with `--recurse-submodules` and you can build and modify the whole stack — the Swift app, the translation pipeline, and the engine itself. Engine-level PRs (the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager) are welcome upstream. See [Contributing](#contributing).
 
 **How do I update?**
 If you installed via Homebrew, update with `brew upgrade --cask nyora`. If you installed the `.dmg` directly, download the latest from the [Releases page](https://github.com/Hasan72341/nyora-mac/releases/latest) and replace the app in Applications.
@@ -353,7 +352,7 @@ You don't have to write code to help — every one of these moves the project fo
 - **Test releases.** Try a new `.dmg` or `brew` build and report whether it installs and runs cleanly on your Mac. Real-world install testing is genuinely valuable.
 - **Improve or translate the UI.** Better wording, clearer labels, or UI strings in your language all help — the interface lives in plain SwiftUI views (see [Where Things Live](#where-things-live)).
 - **Write docs.** Clarify a confusing step, fix a typo, or improve this README and the [translation deep-dive](macApp/scripts/README-translation.md). Documentation PRs are some of the easiest to review and merge.
-- **Work on the shared engine.** `nyora-shared` is open-source and welcomes PRs upstream — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync and the downloads manager are all fair game for engine-level contributions.
+- **Work on the shared engine.** `nyora-shared` is open-source and welcomes PRs upstream — the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync and the downloads manager are all fair game for engine-level contributions.
 - **Help with sources.** Nyora's source layer is Tachiyomi/Kotatsu-compatible. The single biggest porting opportunity across the whole project lives in the iOS engine, [nyora-ios](https://github.com/Hasan72341/nyora-ios) (`NyoraEngine`): a framework and template are in place, roughly **1,300 sources remain to port** as mostly-mechanical template subclasses, and the work is highly parallelisable — an ideal "help wanted" if you want high-impact, low-ceremony contributions. Check that repo's README for the current status.
 - **Star and share.** Honestly — starring the repo and telling one friend who reads manga is one of the most useful things you can do. Discovery is the hardest part of an open-source project's life.
 
@@ -377,7 +376,7 @@ cd nyora-mac
 A few notes:
 
 - **UI, reader, and translation work** is fully approachable in this repo — these are Swift/SwiftUI and Core ML, no special setup needed beyond a normal clone.
-- **A complete from-scratch build** also resolves the `nyora-shared` engine submodule, which is public and open-source ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Everyone can build the whole stack, and engine-level changes — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, the downloads manager — are open for PRs upstream.
+- **A complete from-scratch build** also resolves the `nyora-shared` engine submodule, which is public and open-source ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Everyone can build the whole stack, and engine-level changes — the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager — are open for PRs upstream.
 
 If you cloned without submodules, run `git submodule update --init --recursive`. (For maintainers: bumping the engine is the usual `git submodule update --remote nyora-shared` followed by committing the new submodule pointer.)
 
@@ -392,7 +391,7 @@ A quick map so you can find your way around the macOS app:
 | `macApp/Nyora/NyoraApp/AI/` | The on-device translation pipeline — OCR, the MangaTranslator, painters and refiners (`MangaTranslator.swift`, `OcrProvider.swift`, `ChapterTranslator.swift`, `TranslationModels.swift`). |
 | `macApp/Nyora/NyoraApp/Bridge/` | The bridge to the bundled Kotlin helper and auth (`NyoraHelperBridge.swift`, `HelperLauncher.swift`). |
 | [`macApp/scripts/`](macApp/scripts) | Dev/build scripts (`dev-launch.sh`, `build-dmg.sh`) and the translation deep-dive (`README-translation.md`). |
-| [`nyora-shared/`](https://github.com/Hasan72341/nyora-shared) | The shared Kotlin engine — **public, open-source submodule** (Apache-2.0): source/parser runtime, loopback REST server, SQLDelight store, Supabase sync and downloads manager. PRs welcome upstream. |
+| [`nyora-shared/`](https://github.com/Hasan72341/nyora-shared) | The shared Kotlin engine — **public, open-source submodule** (Apache-2.0): source/parser runtime, loopback REST server, SQLDelight store, Nyora Cloud sync and downloads manager. PRs welcome upstream. |
 | [`docs/`](docs) | Screenshots and reference notes. |
 
 ### Good First Contributions
