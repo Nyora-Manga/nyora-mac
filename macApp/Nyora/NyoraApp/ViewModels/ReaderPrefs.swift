@@ -192,6 +192,11 @@ final class ReaderPrefs: ObservableObject {
     @Published var showPageNumbers: Bool = (UserDefaults.standard.object(forKey: Keys.showPageNumbers) as? Bool) ?? true {
         didSet { ud.set(showPageNumbers, forKey: Keys.showPageNumbers) }
     }
+    /// When ON, the reader's left page-thumbnail sidebar column is collapsed so
+    /// the page fills the whole window. Default OFF (sidebar shown).
+    @Published var hideReaderSidebar: Bool = UserDefaults.standard.bool(forKey: Keys.hideReaderSidebar) {
+        didSet { ud.set(hideReaderSidebar, forKey: Keys.hideReaderSidebar) }
+    }
     @Published var readerVolumeButtons: Bool = UserDefaults.standard.bool(forKey: Keys.volumeButtons) {
         didSet { ud.set(readerVolumeButtons, forKey: Keys.volumeButtons) }
     }
@@ -585,6 +590,7 @@ final class ReaderPrefs: ObservableObject {
         static let autoHide         = "nyora.reader.autoHide"
         static let tapZones         = "nyora.reader.tapZones"
         static let showPageNumbers  = "nyora.reader.showPageNumbers"
+        static let hideReaderSidebar = "nyora.reader.hideSidebar"
         static let volumeButtons    = "nyora.reader.volumeButtons"
         
         static let retentionDays    = "nyora.history.retentionDays"

@@ -114,13 +114,22 @@ struct PagedReaderV2: View {
         .focused($focused)
         .focusEffectDisabled()
         .onAppear {
-            focused = true
+            // Defer focus to the next runloop tick. Assigning focus during the
+            // initial layout pass loses to the NavigationSplitView, which grabs
+            // key focus for its sidebar column and swallows every reader key
+            // (arrows, space, n/p, zoom) until the page is clicked. Re-asserting
+            // after layout reliably lands key focus on the reader.
+            DispatchQueue.main.async { focused = true }
             // Warm the next few pages on open so the first turns are instant.
             Task.detached(priority: .background) { [appState, idx = appState.readerPageIndex] in
                 await appState.prefetchReaderPages(around: idx)
             }
         }
         .onChange(of: appState.readerPageIndex) { _, newIndex in
+            // A page change can come from the sidebar thumbnails or the seekbar,
+            // both of which steal key focus. Pull it back so keyboard paging
+            // keeps working after those interactions.
+            focused = true
             resetZoom()
             // Within-chapter prefetch: warm the next N pages as the user turns
             // (covers goForward/goBack/jumpTo/seekbar — all mutate readerPageIndex).
@@ -183,7 +192,9 @@ struct PagedReaderV2: View {
                     rtl: isRTL
                 )
             }
-            .padding(.bottom, 18)
+            // Lift the floating seekbar clear of the window's bottom edge so it
+            // reads as a floating control, not something pinned to the frame.
+            .padding(.bottom, 42)
         }
     }
 
@@ -217,6 +228,7 @@ struct PagedReaderV2: View {
     // MARK: Navigation
 
     private func goBack(isDouble: Bool = false) {
+        focused = true
         let step = isDouble ? 2 : 1
         let target = pageIndex - step
         guard target >= 0 else { return }
@@ -225,6 +237,7 @@ struct PagedReaderV2: View {
     }
 
     private func goForward(isDouble: Bool = false) {
+        focused = true
         let step = isDouble ? 2 : 1
         let target = pageIndex + step
         guard target < chapter.pages.count else { return }
@@ -502,7 +515,7 @@ struct WebtoonReaderV2: View {
                         ),
                         pageCount: chapter.pages.count
                     )
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 38)
                     .opacity(controlsVisible ? 1 : 0)
                     .animation(.easeInOut(duration: 0.25), value: controlsVisible)
                 }
@@ -511,7 +524,9 @@ struct WebtoonReaderV2: View {
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
-        .onAppear { focused = true }
+        // Defer focus past the initial layout pass so it isn't swallowed by the
+        // NavigationSplitView sidebar (see PagedReaderV2 for the full rationale).
+        .onAppear { DispatchQueue.main.async { focused = true } }
         // Keyboard: arrows / space scroll by page-jump
         .onKeyPress(.upArrow)   { jumpRelative(-1); return .handled }
         .onKeyPress(.downArrow) { jumpRelative(+1); return .handled }

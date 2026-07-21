@@ -91,6 +91,16 @@ struct ReaderSettingsSheet: View {
                         set: { appState.readerPrefs.autoHideControls = $0 }
                     )
                 )
+                Divider()
+                toggleRow(
+                    icon: "sidebar.left",
+                    title: "Hide page thumbnails sidebar",
+                    subtitle: "Collapse the left page-strip so the page fills the whole window",
+                    isOn: Binding(
+                        get: { appState.readerPrefs.hideReaderSidebar },
+                        set: { appState.readerPrefs.hideReaderSidebar = $0 }
+                    )
+                )
             }
             .settingsCard(cornerRadius: 14)
         }

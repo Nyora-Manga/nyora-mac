@@ -6,6 +6,9 @@ struct RootView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedDestination: NavDestination = .history
     @State private var isUnlocked: Bool = false
+    /// Drives the split-view sidebar column so the reader's "Hide sidebar"
+    /// toggle can collapse the page-thumbnail strip to a full-width page.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
         ZStack {
@@ -16,7 +19,7 @@ struct RootView: View {
                         removal: .opacity.combined(with: .move(edge: .top))
                     ))
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     // In reader mode the left panel becomes the page-thumbnail
                     // strip. ReaderSidebar renders its own empty state when no
                     // chapter is open, so we DON'T also require an active chapter
@@ -93,6 +96,12 @@ struct RootView: View {
                 _ = appState.consumeNavigation()
             }
         }
+        // Collapse / restore the sidebar column whenever the reader's
+        // "Hide sidebar" toggle, the active destination, or the open chapter
+        // changes. Only reader mode hides — every other pane keeps its sidebar.
+        .onChange(of: appState.readerPrefs.hideReaderSidebar) { _, _ in syncSidebarVisibility() }
+        .onChange(of: selectedDestination) { _, _ in syncSidebarVisibility() }
+        .onChange(of: appState.activeChapter?.id) { _, _ in syncSidebarVisibility() }
         .sheet(isPresented: $appState.isCatalogPresented) {
             CatalogSheet()
                 .environmentObject(appState)
@@ -117,6 +126,18 @@ struct RootView: View {
             if !enabled {
                 isUnlocked = true
             }
+        }
+    }
+
+    /// Collapse the split-view sidebar only while reading with a chapter open
+    /// and the user's "Hide sidebar" preference on; otherwise leave it to the
+    /// system default so every other pane shows its navigation column.
+    private func syncSidebarVisibility() {
+        let hide = selectedDestination == .reader
+            && appState.readerPrefs.hideReaderSidebar
+            && (appState.activeChapter?.pages.isEmpty == false)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            columnVisibility = hide ? .detailOnly : .automatic
         }
     }
 

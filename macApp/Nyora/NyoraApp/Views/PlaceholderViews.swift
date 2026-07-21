@@ -1693,6 +1693,13 @@ struct ReaderView: View {
                                 Spacer()
                             }
                         }
+
+                        HStack {
+                            Toggle("Hide Page Sidebar", isOn: $appState.readerPrefs.hideReaderSidebar)
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                            Spacer()
+                        }
                     }
                     .padding(.horizontal, 4)
                     
