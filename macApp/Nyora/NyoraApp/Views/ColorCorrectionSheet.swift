@@ -567,7 +567,10 @@ struct ColorCorrectionSheet: View {
             Text(preset.label)
                 .font(.caption.weight(selected ? .semibold : .regular))
                 .padding(.horizontal, 12).padding(.vertical, 6)
-                .foregroundStyle(selected ? Color.white : Color.primary)
+                // Selected sits on an accent-tinted capsule, so it needs the contrasting
+                // colour rather than a fixed white — the accent is user-selectable and
+                // Yuki's is near-white.
+                .foregroundStyle(selected ? Color.onAccent : Color.primary)
                 // Native Liquid Glass capsule — tinted + interactive when
                 // selected, neutral otherwise. Routed through the shared
                 // reduce-transparency helper for accessibility.

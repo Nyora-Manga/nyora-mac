@@ -43,6 +43,24 @@ actor HelperLauncher {
             jar.path,
             "--watch-pid=\(ProcessInfo.processInfo.processIdentifier)",
         ]
+        // Solve Cloudflare with our own WKWebView (MacCloudflareSolver) instead of a
+        // headless Chrome. The helper then reports a challenge as
+        // "Cloudflare challenge: <host>" rather than shelling out to FlareSolverr, and
+        // NyoraHelperBridge solves it and POSTs the clearance back. WebKit ships with
+        // macOS, runs on the user's own IP, and a human can clear Turnstile — none of
+        // which a bundled Chromium would give us. FlareSolverr is also belt-and-braces
+        // disabled: nothing should ever try to reach 127.0.0.1:8191 from the app.
+        var env = ProcessInfo.processInfo.environment
+        env["NYORA_NATIVE_CF_SOLVER"] = "1"
+        env["NYORA_FLARESOLVERR_DISABLED"] = "1"
+        // Start the WebView relay and tell the helper where it is. Cloudflare-protected
+        // requests are fetched through the app's WKWebView (the session that holds the
+        // clearance) instead of the helper's OkHttp, which the clearance rejects.
+        if let relayPort = WebViewRelayServer.shared.start() {
+            env["NYORA_WEBVIEW_RELAY_URL"] = "http://127.0.0.1:\(relayPort)/relay"
+        }
+        proc.environment = env
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe

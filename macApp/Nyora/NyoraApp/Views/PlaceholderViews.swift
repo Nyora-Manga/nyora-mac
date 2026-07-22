@@ -7,13 +7,6 @@ struct HistoryView: View {
     @State private var cachedSortedHistory: [HelperHistoryRow] = []
     @State private var cachedGroupedHistory: [(String, [HelperHistoryRow])] = []
 
-    private var historyBackdrop: some View {
-        // Flat backdrop. The old triple RadialGradient got composited under the
-        // List on every scrolled frame, which is what made History stutter
-        // (Feed got the same treatment and is now smooth).
-        Color.appBackground.ignoresSafeArea()
-    }
-
     private func rebuildSortedCache() {
         let rows = appState.history
 
@@ -62,24 +55,11 @@ struct HistoryView: View {
                 List {
                     ForEach(cachedGroupedHistory, id: \.0) { group in
                         if appState.readerPrefs.historyGrouping {
-                            Section(header:
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(group.0)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                        .textCase(.uppercase)
-                                    Rectangle()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [Color.appAccent.opacity(0.4), Color.clear],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 1)
-                                }
-                            ) {
+                            // A plain section header — the system draws it with the right
+                            // metrics and material. The old hand-rolled uppercase caption
+                            // plus accent gradient rule is what made each pane look like a
+                            // different app.
+                            Section(group.0) {
                                 rowsSection(group.1)
                             }
                         } else {
@@ -89,7 +69,6 @@ struct HistoryView: View {
                 }
                 .listStyle(.inset)
                 .scrollContentBackground(.hidden)
-                .background(historyBackdrop)
             }
         }
         .onAppear {
@@ -139,51 +118,66 @@ struct HistoryView: View {
 @MainActor
 struct FeedView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     @State private var trending: [AniListBrowseMedia] = []
     @State private var popular: [AniListBrowseMedia] = []
     @State private var topRated: [AniListBrowseMedia] = []
+    @State private var manhwa: [AniListBrowseMedia] = []
+    @State private var manhua: [AniListBrowseMedia] = []
+    @State private var mangaJp: [AniListBrowseMedia] = []
     @State private var loading = false
     @State private var error: String?
     @State private var searchText: String = ""
 
     private var isEmpty: Bool {
         trending.isEmpty && popular.isEmpty && topRated.isEmpty
+            && manhwa.isEmpty && manhua.isEmpty && mangaJp.isEmpty
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28, pinnedViews: []) {
-                feedHeader
-                searchBar
-
-                if loading && isEmpty {
-                    ProgressView("Loading feed…")
-                        .frame(maxWidth: .infinity, minHeight: 240)
-                } else if let error, isEmpty {
-                    EmptyStateView(
-                        icon: "wifi.exclamationmark",
-                        title: "Couldn't load the feed",
-                        message: error
-                    )
-                    .frame(minHeight: 240)
-                } else if isEmpty {
-                    EmptyStateView(
-                        icon: "newspaper",
-                        title: "Nothing in the feed yet",
-                        message: "Refresh to load popular manga from MangaBaka."
-                    )
-                    .frame(minHeight: 240)
-                } else {
-                    section("Trending Now", "Most popular manga right now", trending)
-                    section("Popular Manhwa", "Trending webtoons & manhwa", popular)
-                    section("Top Rated", "Highest-scored manga of all time", topRated)
+        Group {
+            if loading && isEmpty {
+                ProgressView("Loading feed…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error, isEmpty {
+                EmptyStateView(
+                    icon: "wifi.exclamationmark",
+                    title: "Couldn't load the feed",
+                    message: error
+                )
+            } else if isEmpty {
+                EmptyStateView(
+                    icon: "newspaper",
+                    title: "Nothing in the feed yet",
+                    message: "Refresh to load trending manga from AniList."
+                )
+            } else {
+                // A vertical ScrollView of horizontal shelves (App-Store style).
+                // A `List` here swallowed the vertical scroll wheel whenever the
+                // pointer was over a horizontal shelf; a plain ScrollView forwards
+                // the orthogonal scroll to the parent, so it scrolls vertically.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 26) {
+                        if let hero = trending.first {
+                            FeedHeroCard(media: hero) { openInSearch(hero) }
+                        }
+                        // The #1 trending title is the hero, so the rail skips it.
+                        shelf("Trending Now", "Most popular right now", Array(trending.dropFirst()))
+                        shelf("Popular Manhwa", "Korean webtoons", manhwa.isEmpty ? popular : manhwa)
+                        shelf("Popular Manhua", "Chinese comics", manhua)
+                        shelf("Popular Manga", "Japanese manga", mangaJp)
+                        shelf("Top Rated", "Highest-scored of all time", topRated)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 26)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .scrollContentBackground(.hidden)
             }
-            .padding(.vertical, 20)
         }
-        .background(feedBackdrop)
+        .searchable(text: $searchText, prompt: "Search every installed source…")
+        .onSubmit(of: .search) { runUniversalSearch() }
         .task {
             if isEmpty { await load() }
         }
@@ -201,76 +195,20 @@ struct FeedView: View {
         }
     }
 
-    private var feedHeader: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Feed")
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
-            Text("Discover what's popular on MangaBaka.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 22)
-    }
-
-    /// Universal search entry — runs a search across every installed source
-    /// (via AppState) and hands the user off to the Universal Search screen.
-    private var searchBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search every installed source…", text: $searchText)
-                .textFieldStyle(.plain)
-                .onSubmit { runUniversalSearch() }
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
-        )
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 22)
-    }
-
-    private var feedBackdrop: some View {
-        Color.appBackground.ignoresSafeArea()
-    }
-
     @ViewBuilder
-    private func section(_ title: String, _ subtitle: String, _ items: [AniListBrowseMedia]) -> some View {
+    private func shelf(_ title: String, _ subtitle: String, _ items: [AniListBrowseMedia]) -> some View {
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.title3.bold())
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 22)
-
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 14) {
+                    LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(items) { media in
-                            AniListFeedCard(media: media) {
-                                openInSearch(media)
-                            }
+                            AniListFeedCard(media: media) { openInSearch(media) }
                         }
                     }
-                    .padding(.horizontal, 22)
                     .padding(.vertical, 2)
                 }
             }
@@ -300,12 +238,99 @@ struct FeedView: View {
         do {
             let data = try await appState.helper.anilistBrowse(hideAdult: appState.readerPrefs.nsfwFilter)
             trending = data.trending?.media ?? []
-            popular  = data.popular?.media ?? []
+            popular  = data.popular?.media ?? []      // MangaBaka fallback rail
             topRated = data.topRated?.media ?? []
+            manhwa   = data.manhwa?.media ?? []
+            manhua   = data.manhua?.media ?? []
+            mangaJp  = data.manga?.media ?? []
         } catch {
             self.error = error.localizedDescription
         }
         loading = false
+    }
+}
+
+/// Premium hero for the #1 trending title — wide banner backdrop, cover thumb,
+/// title, genre chips and a Read button (nyora-web discover style).
+@MainActor
+private struct FeedHeroCard: View {
+    let media: AniListBrowseMedia
+    let onTap: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            AsyncImage(url: URL(string: media.backdropURL)) { phase in
+                if case let .success(image) = phase {
+                    image.resizable().scaledToFill()
+                } else {
+                    Rectangle().fill(Color.primary.opacity(0.06))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 260)
+            .clipped()
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.35), .black.opacity(0.88)],
+                startPoint: .top, endPoint: .bottom
+            )
+
+            HStack(alignment: .bottom, spacing: 16) {
+                AsyncImage(url: URL(string: media.coverURL)) { phase in
+                    if case let .success(image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Rectangle().fill(Color.primary.opacity(0.1))
+                    }
+                }
+                .aspectRatio(2.0 / 3.0, contentMode: .fill)
+                .frame(width: 100)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("#1 TRENDING")
+                        .font(.caption2.bold())
+                        .tracking(1.2)
+                        .foregroundStyle(Color.appAccent)
+                    Text(media.bestTitle)
+                        .font(.title2.bold())
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    if let genres = media.genres, !genres.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(genres.prefix(3), id: \.self) { g in
+                                Text(g)
+                                    .font(.caption2.weight(.medium))
+                                    .padding(.horizontal, 8).padding(.vertical, 3)
+                                    .background(.white.opacity(0.16), in: Capsule())
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                    }
+                    Button { onTap() } label: {
+                        Label("Read", systemImage: "book.fill").font(.subheadline.bold())
+                            .padding(.horizontal, 16).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.appAccent)
+                    .padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+        }
+        .frame(height: 260)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08), lineWidth: 1))
+        .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
+        .scaleEffect(hover ? 1.006 : 1.0)
+        .animation(.easeOut(duration: 0.15), value: hover)
+        .onHover { hover = $0 }
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
     }
 }
 
@@ -314,357 +339,78 @@ struct FeedView: View {
 private struct AniListFeedCard: View {
     let media: AniListBrowseMedia
     let onTap: () -> Void
-    @State private var isHovered = false
+    @State private var hover = false
 
     var body: some View {
         Button {
             onTap()
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                ZStack(alignment: .topTrailing) {
-                    AsyncImage(url: URL(string: media.coverURL)) { phase in
-                        switch phase {
-                        case let .success(image):
-                            image.resizable().scaledToFill()
-                        default:
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.primary.opacity(0.06))
-                                .shimmer()
-                        }
-                    }
-                    .aspectRatio(2.0 / 3.0, contentMode: .fill)
-                    .frame(width: 132)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        LinearGradient(
-                            colors: [.clear, .clear, .black.opacity(0.55)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    )
-
-                    if let score = media.averageScore, score > 0 {
-                        Text("\(score)%")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.55), in: Capsule())
-                            .padding(8)
+                AsyncImage(url: URL(string: media.coverURL)) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image.resizable().scaledToFill()
+                    default:
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.06))
                     }
                 }
+                .aspectRatio(2.0 / 3.0, contentMode: .fill)
+                .frame(width: 132)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+                // Score badge, top-trailing.
+                .overlay(alignment: .topTrailing) {
+                    if let score = media.averageScore, score > 0 {
+                        Text("\(score)%")
+                            .font(.caption2.bold().monospacedDigit())
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
+                            .padding(6)
+                    }
+                }
+                .shadow(color: .black.opacity(hover ? 0.35 : 0.0), radius: hover ? 12 : 0, y: hover ? 5 : 0)
 
                 Text(media.bestTitle)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .frame(width: 132, alignment: .leading)
 
-                if let genre = media.topGenre {
-                    Text(genre)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                // Score and genre are data — kept as one plain secondary line
+                // in place of the overlaid capsule badge.
+                HStack(spacing: 4) {
+                    if let score = media.averageScore, score > 0 {
+                        Text("\(score)%")
+                            .monospacedDigit()
+                        if media.topGenre != nil { Text("·") }
+                    }
+                    if let genre = media.topGenre {
+                        Text(genre)
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 132, alignment: .leading)
             }
             .frame(width: 132)
-            .opacity(isHovered ? 0.92 : 1.0)
-            .animation(.easeInOut(duration: 0.15), value: isHovered)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .scaleEffect(hover ? 1.04 : 1.0)
+        .animation(.easeOut(duration: 0.14), value: hover)
+        .onHover { hover = $0 }
     }
 }
 
-@MainActor
-struct LocalView: View {
-    @EnvironmentObject var appState: AppState
-
-    var body: some View {
-        Group {
-            if appState.localFolder.isEmpty {
-                localEmptyState
-            } else if appState.localEntries.isEmpty {
-                localNoCbzState
-            } else {
-                localList
-            }
-        }
-        .toolbar {
-            Button { pickFolder() } label: { Label("Choose Folder", systemImage: "folder.badge.plus") }
-            Button {
-                Task { await appState.scanLocalFolder() }
-            } label: { Label("Rescan", systemImage: "arrow.clockwise") }
-            .disabled(appState.localFolder.isEmpty)
-        }
-        .task {
-            if !appState.localFolder.isEmpty && appState.localEntries.isEmpty {
-                await appState.scanLocalFolder()
-            }
-        }
-    }
-
-    // MARK: - Empty state (no folder picked)
-
-    private var localEmptyState: some View {
-        ZStack {
-            Color.appBackground.ignoresSafeArea()
-
-            VStack(spacing: 26) {
-                // Floating empty-state icon badge — native Liquid Glass circle
-                // in place of the flat accent radial wash.
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 34))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.appAccent)
-                    .frame(width: 80, height: 80)
-                    .adaptiveGlass(.circle, tint: Color.appAccent)
-
-                VStack(spacing: 8) {
-                    Text("No Folder Selected")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-                    Text("Choose a folder containing .cbz files. They will show up here as readable chapters.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 320)
-                }
-
-                Button("Choose Folder") { pickFolder() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.white.opacity(0.18), Color.clear],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                            )
-                            .allowsHitTesting(false)
-                    )
-            }
-            .padding(32)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - No CBZ files found state
-
-    private var localNoCbzState: some View {
-        ZStack {
-            Color.appBackground.ignoresSafeArea()
-
-            VStack(spacing: 24) {
-                // Floating empty-state icon badge — native Liquid Glass circle
-                // in place of the flat accent radial wash.
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 34))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.appAccent)
-                    .frame(width: 80, height: 80)
-                    .adaptiveGlass(.circle, tint: Color.appAccent)
-
-                VStack(spacing: 8) {
-                    Text("No CBZ files found")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-                    Text(appState.localFolder)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 560)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 24)
-                }
-
-                HStack(spacing: 12) {
-                    Button {
-                        Task { await appState.scanLocalFolder() }
-                    } label: {
-                        Label("Rescan", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.white.opacity(0.18), Color.clear],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                            )
-                            .allowsHitTesting(false)
-                    )
-
-                    Button("Choose Folder") { pickFolder() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color.white.opacity(0.18), Color.clear],
-                                        startPoint: .top,
-                                        endPoint: .center
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                        )
-                }
-            }
-            .padding(32)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - List of CBZ entries
-
-    private var localList: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(appState.localEntries) { entry in
-                    LocalEntryRow(entry: entry, formatter: byteFormatter) {
-                        Task { await appState.openLocalCbz(entry) }
-                    }
-                }
-            }
-            .padding(16)
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func pickFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a folder that contains .cbz manga files"
-        if panel.runModal() == .OK, let url = panel.url {
-            appState.localFolder = url.path
-            Task { await appState.scanLocalFolder() }
-        }
-    }
-
-    private var byteFormatter: ByteCountFormatter {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useMB, .useGB]
-        f.countStyle = .file
-        return f
-    }
-}
-
-@MainActor
-private struct LocalCTAButton: View {
-    let label: String
-    let icon: String
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button {
-            action()
-        } label: {
-            Label(label, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-                .background(
-                    LinearGradient(
-                        colors: [Color.appAccent.opacity(0.92), Color.appAccent.opacity(0.68)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                )
-                .shadow(color: Color.appAccent.opacity(isHovered ? 0.50 : 0.22), radius: isHovered ? 16 : 8, y: 4)
-        }
-        .buttonStyle(.plain)
-        .scaleEffect(isHovered ? 1.04 : 1.0)
-        .animation(.spring(response: 0.38, dampingFraction: 0.65), value: isHovered)
-        .onHover { isHovered = $0 }
-    }
-}
-
-@MainActor
-private struct LocalEntryRow: View {
-    let entry: HelperLocalCbz
-    let formatter: ByteCountFormatter
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button {
-            action()
-        } label: {
-            HStack(spacing: 14) {
-                // File icon with gradient background
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.appAccent.opacity(0.20), Color.appAccent.opacity(0.08)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 40, height: 40)
-                    Image(systemName: "doc.richtext.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Color.appAccent)
-                }
-
-                Text(entry.name)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Spacer()
-
-                // Size chip: inline metadata, not a floating surface — a subtle
-                // solid capsule rather than glass (avoids frosting a static row).
-                Text(formatter.string(fromByteCount: entry.sizeBytes))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(Color.cardSurface, in: Capsule())
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        isHovered
-                        ? AnyShapeStyle(LinearGradient(
-                            colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.03)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                          ))
-                        : AnyShapeStyle(Color.clear)
-                    )
-            )
-            .animation(.spring(response: 0.38, dampingFraction: 0.65), value: isHovered)
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-    }
-}
+// LocalView + LocalEntryRow were removed from this file and rebuilt from scratch in
+// LocalView.swift (see that file). The rewrite fixed the sidebar-scroll bug this pane had.
 
 @MainActor
 struct SuggestionsView: View {
@@ -676,11 +422,10 @@ struct SuggestionsView: View {
     var body: some View {
         Group {
             if loading {
-                ZStack {
-                    Color.appBackground.ignoresSafeArea()
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                // The backdrop is gone — the list draws the system background,
+                // as in History.
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error {
                 EmptyStateView(icon: "books.vertical",
                                title: "Unable to load suggestions",
@@ -690,34 +435,38 @@ struct SuggestionsView: View {
                                title: "No suggestions yet",
                                message: "Favourite a manga to see related titles from the same source.")
             } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: CGFloat(appState.readerPrefs.gridSize), maximum: CGFloat(appState.readerPrefs.gridSize) * 1.4), spacing: 14)], spacing: 14) {
-                        ForEach(entries) { manga in
-                            SuggestionCard(manga: manga)
-                                .onTapGesture {
-                                    Task {
-                                        let summary = MangaSummary(
-                                            id: manga.id,
-                                            title: manga.title,
-                                            sourceName: "",
-                                            coverUrl: manga.coverUrl,
-                                            unread: 0,
-                                            progress: 0.0,
-                                            tags: []
-                                        )
-                                        await appState.openDetails(summary)
-                                        appState.pendingNavigation = .explore
-                                    }
-                                }
-                        }
+                List {
+                    ForEach(entries) { manga in
+                        SuggestionRowView(manga: manga) { open(manga) }
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                            .listRowSeparator(.hidden)
                     }
-                    .padding(18)
                 }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
         .task { await load() }
         .toolbar {
             Button { Task { await load() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+        }
+    }
+
+    /// Open a suggestion's details, exactly as the old card's tap gesture did.
+    private func open(_ manga: HelperSuggestedManga) {
+        Task {
+            let summary = MangaSummary(
+                id: manga.id,
+                title: manga.title,
+                sourceName: "",
+                coverUrl: manga.coverUrl,
+                unread: 0,
+                progress: 0.0,
+                tags: []
+            )
+            await appState.openDetails(summary)
+            appState.pendingNavigation = .explore
         }
     }
 
@@ -739,13 +488,6 @@ struct StatsView: View {
     @State private var loading = false
     @State private var error: String?
 
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .long
-        f.timeStyle = .none
-        return f
-    }()
-
     var body: some View {
         Group {
             if loading && stats == nil {
@@ -756,85 +498,33 @@ struct StatsView: View {
                                title: "Unable to load statistics",
                                message: error)
             } else if let s = stats {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
+                List {
+                    Section("Summary") {
+                        StatsRow(label: "Chapters Read",  value: "\(s.totalChapters)",     icon: "book")
+                        StatsRow(label: "Distinct Manga", value: "\(s.distinctManga)",     icon: "books.vertical")
+                        StatsRow(label: "Favourites",     value: "\(s.favouritesCount)",   icon: "heart")
+                        StatsRow(label: "Longest Streak", value: "\(s.longestStreakDays)d", icon: "flame")
+                    }
 
-                        // Hero header
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Reading Stats")
-                                .font(.system(size: 28, weight: .bold, design: .rounded))
-                                .foregroundStyle(.primary)
-                            Text(Self.dateFormatter.string(from: Date()))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.bottom, 4)
-
-                        // Stat cards grid — adaptive min 130
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 130), spacing: 14)],
-                            spacing: 14
-                        ) {
-                            StatsCard(label: "Chapters Read",  value: "\(s.totalChapters)",
-                                      icon: "book.fill",
-                                      gradient: [Color.appAccent.opacity(0.85), Color.appAccent.opacity(0.45)],    delay: 0.00)
-                            StatsCard(label: "Distinct Manga", value: "\(s.distinctManga)",
-                                      icon: "books.vertical.fill",
-                                      gradient: [Color.appAccent.opacity(0.85), Color.appAccent.opacity(0.45)],  delay: 0.06)
-                            StatsCard(label: "Favourites",     value: "\(s.favouritesCount)",
-                                      icon: "heart.fill",
-                                      gradient: [Color.appAccent.opacity(0.85), Color.appAccent.opacity(0.45)],     delay: 0.12)
-                            StatsCard(label: "Longest Streak", value: "\(s.longestStreakDays)d",
-                                      icon: "flame.fill",
-                                      gradient: [Color.appAccent.opacity(0.85), Color.appAccent.opacity(0.45)], delay: 0.18)
-                        }
-
-                        // Top sources section
-                        if !s.topSources.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("TOP SOURCES")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .tracking(1.2)
-
-                                let maxCount = s.topSources.map(\.count).max() ?? 1
-                                ForEach(Array(s.topSources.enumerated()), id: \.element.id) { idx, row in
-                                    StatsSourceRow(row: row, maxCount: maxCount, delay: Double(idx) * 0.06)
-                                }
+                    if !s.topSources.isEmpty {
+                        Section("Top Sources") {
+                            let maxCount = s.topSources.map(\.count).max() ?? 1
+                            ForEach(s.topSources, id: \.id) { row in
+                                StatsSourceRow(row: row, maxCount: maxCount)
                             }
                         }
                     }
-                    .padding(22)
                 }
-                .background(statsBackdrop)
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             } else {
                 EmptyStateView(icon: "chart.bar", title: "No stats yet", message: "Start reading to see your statistics here.")
             }
         }
-        .background(statsBackdrop)
         .task { await load() }
         .toolbar {
             Button { Task { await load() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         }
-    }
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var statsBackdrop: some View {
-        ZStack {
-            Color.appBackground
-            if colorScheme == .dark {
-                RadialGradient(
-                    colors: [Color.appAccent.opacity(0.12), Color.clear],
-                    center: .topLeading, startRadius: 10, endRadius: 380
-                )
-                RadialGradient(
-                    colors: [Color.appAccent.opacity(0.10), Color.clear],
-                    center: .bottomTrailing, startRadius: 10, endRadius: 340
-                )
-            }
-        }
-        .ignoresSafeArea()
     }
 
     private func load() async {
@@ -848,76 +538,26 @@ struct StatsView: View {
     }
 }
 
+/// One summary statistic as a stock list row — label with its symbol on the
+/// leading edge, value as trailing metadata. Replaces the aurora/glass card:
+/// the numbers are data, not decoration.
 @MainActor
-private struct StatsCard: View {
+private struct StatsRow: View {
     let label: String
     let value: String
     let icon: String
-    let gradient: [Color]
-    let delay: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 18))
-                .foregroundStyle(.white)
+        HStack(spacing: 10) {
+            Label(label, systemImage: icon)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 12)
+
             Text(value)
-                .font(.title.bold().monospacedDigit())
-                .foregroundStyle(.white)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.65))
+                .font(.body.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(
-            // AURORA FILL: base accent linear (0.85 -> 0.45) layered with a
-            // bright accent radial spot anchored at .topLeading + a dimmer
-            // accent spot at .bottomTrailing for organic single-hue depth.
-            ZStack {
-                LinearGradient(
-                    stops: [
-                        .init(color: statsBaseTop, location: 0),
-                        .init(color: statsBaseTop.opacity(0.78), location: 0.55),
-                        .init(color: statsBaseBottom, location: 1)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                RadialGradient(
-                    stops: [
-                        .init(color: Color.appAccent.opacity(0.40), location: 0),
-                        .init(color: Color.appAccent.opacity(0.18), location: 0.45),
-                        .init(color: .clear, location: 1)
-                    ],
-                    center: .topLeading, startRadius: 0, endRadius: 150
-                )
-                RadialGradient(
-                    stops: [
-                        .init(color: Color.appAccent.opacity(0.22), location: 0),
-                        .init(color: .clear, location: 1)
-                    ],
-                    center: .bottomTrailing, startRadius: 0, endRadius: 130
-                )
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        )
-        // Native Liquid Glass supplies its own edge lighting + top highlight,
-        // so the hand-rolled white highlight overlay and conic border are gone.
-        // The decorative aurora fill above stays as the card's colour bed; the
-        // accent-tinted glass floats over it as the actual card surface.
-        .adaptiveGlass(.rect(cornerRadius: 18), tint: Color.appAccent)
-        .shadow(color: (gradient.first ?? Color.appAccent).opacity(0.30), radius: 12, y: 5)
-        .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
-    }
-
-    private var statsBaseTop: Color {
-        gradient.first ?? Color.appAccent.opacity(0.85)
-    }
-
-    private var statsBaseBottom: Color {
-        if gradient.count > 1 { return gradient[1] }
-        return (gradient.first ?? Color.appAccent).opacity(0.45)
     }
 }
 
@@ -925,45 +565,26 @@ private struct StatsCard: View {
 private struct StatsSourceRow: View {
     let row: HelperStatsSource
     let maxCount: Int
-    let delay: Double
 
     var body: some View {
         HStack(spacing: 12) {
             Text(row.sourceName)
-                .font(.subheadline)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
 
-            Spacer()
+            Spacer(minLength: 12)
+
+            // The share bar stays — it is the comparison, not decoration — but
+            // as a stock linear ProgressView tinted with the accent.
+            ProgressView(value: Double(row.count), total: Double(max(maxCount, 1)))
+                .progressViewStyle(.linear)
+                .tint(Color.appAccent)
+                .frame(width: 80)
 
             Text("\(row.count)")
-                .font(.subheadline.monospacedDigit())
+                .font(.body.monospacedDigit())
                 .foregroundStyle(.secondary)
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 3)
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.appAccent, Color.appAccent.opacity(0.55)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(height: 3)
-                    .frame(maxWidth: .infinity)
-                    .scaleEffect(x: Double(row.count) / Double(max(maxCount, 1)), anchor: .leading)
-            }
-            .frame(width: 80)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
     }
 }
 
@@ -980,47 +601,24 @@ struct BookmarksView: View {
                     message: "Tap the bookmark icon in the reader to save any page."
                 )
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22, pinnedViews: []) {
-                        ForEach(groups, id: \.mangaId) { group in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(group.mangaTitle.uppercased())
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.secondary)
-                                    .tracking(1.4)
-                                    .padding(.leading, 4)
-
-                                VStack(spacing: 0) {
-                                    ForEach(Array(group.bookmarks.enumerated()), id: \.element.id) { idx, bookmark in
-                                        if idx > 0 {
-                                            Divider().opacity(0.4).padding(.leading, 68)
-                                        }
-                                        BookmarkRow(bookmark: bookmark) {
-                                            Task { await appState.openBookmark(bookmark) }
-                                        } onDelete: {
-                                            Task {
-                                                try? await appState.helper.removeBookmark(id: bookmark.id)
-                                                await appState.reloadBookmarks()
-                                            }
-                                        }
+                List {
+                    ForEach(groups, id: \.mangaId) { group in
+                        Section(group.mangaTitle) {
+                            ForEach(group.bookmarks, id: \.id) { bookmark in
+                                BookmarkRow(bookmark: bookmark) {
+                                    Task { await appState.openBookmark(bookmark) }
+                                } onDelete: {
+                                    Task {
+                                        try? await appState.helper.removeBookmark(id: bookmark.id)
+                                        await appState.reloadBookmarks()
                                     }
                                 }
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [Color.primary.opacity(0.05), Color.primary.opacity(0.015)],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                )
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    .padding(18)
                 }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
         .toolbar {
@@ -1047,7 +645,6 @@ private struct BookmarkRow: View {
     let bookmark: HelperBookmark
     let onOpen: () -> Void
     let onDelete: () -> Void
-    @State private var isHovered = false
 
     var body: some View {
         Button {
@@ -1068,39 +665,37 @@ private struct BookmarkRow: View {
                 .frame(width: 44, height: 62)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-                // Middle: chapter title, page number, optional note
-                VStack(alignment: .leading, spacing: 3) {
+                // Title plus a single secondary line — the page number and the
+                // optional note read as one subtitle rather than three stacked rows.
+                VStack(alignment: .leading, spacing: 2) {
                     Text(bookmark.chapterTitle.isEmpty ? "Chapter" : bookmark.chapterTitle)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text("Page \(bookmark.page + 1)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !bookmark.note.isEmpty {
-                        Text(bookmark.note)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(2)
+
+                    HStack(spacing: 4) {
+                        Text("Page \(bookmark.page + 1)")
+                        if !bookmark.note.isEmpty {
+                            Text("·")
+                            Text(bookmark.note)
+                        }
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 12)
 
                 // Right: relative timestamp
                 Text(Date(timeIntervalSince1970: TimeInterval(bookmark.createdAt) / 1000),
                      format: .relative(presentation: .named))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(Color.primary.opacity(isHovered ? 0.05 : 0))
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
         .contextMenu {
             Button { onOpen() } label: { Label("Open", systemImage: "book.pages") }
             Divider()
@@ -1118,29 +713,15 @@ struct UpdatesView: View {
             if appState.updates.isEmpty {
                 updatesEmptyState
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(appState.updates.enumerated()), id: \.element.id) { idx, update in
-                            if idx > 0 {
-                                Divider().opacity(0.4).padding(.leading, 78)
-                            }
-                            UpdateRow(update: update) {
-                                Task { await appState.markUpdatesSeen(update.mangaId) }
-                            }
+                List {
+                    ForEach(appState.updates, id: \.id) { update in
+                        UpdateRow(update: update) {
+                            Task { await appState.markUpdatesSeen(update.mangaId) }
                         }
                     }
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.primary.opacity(0.05), Color.primary.opacity(0.015)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                    )
-                    .padding(16)
                 }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
         .toolbar {
@@ -1169,11 +750,7 @@ struct UpdatesView: View {
             } label: {
                 Label("Check for Updates", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.appAccent)
-            .controlSize(.regular)
             .disabled(appState.isRefreshingUpdates)
-            .opacity(appState.isRefreshingUpdates ? 0.5 : 1.0)
         }
     }
 }
@@ -1182,8 +759,6 @@ struct UpdatesView: View {
 private struct UpdateRow: View {
     let update: HelperUpdate
     let onMarkSeen: () -> Void
-    @State private var isHovered = false
-    @State private var markHovered = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1201,111 +776,122 @@ private struct UpdateRow: View {
             .frame(width: 52, height: 74)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-            // Middle: title, new-chapters badge + latest chapter, last synced
-            VStack(alignment: .leading, spacing: 5) {
+            // Title plus a single secondary line — new-chapter count, latest
+            // chapter and last-synced collapse into one subtitle. The count is
+            // plain text rather than a gradient capsule.
+            VStack(alignment: .leading, spacing: 2) {
                 Text(update.mangaTitle)
-                    .font(.subheadline.weight(.bold))
+                    .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                HStack(spacing: 6) {
-                    // New-chapters badge
-                    Text("+\(update.newChapters)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color.appAccent, in: Capsule())
-
+                HStack(spacing: 4) {
+                    Text("\(update.newChapters) new")
                     if !update.latestChapterTitle.isEmpty {
+                        Text("·")
                         Text(update.latestChapterTitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
+                    Text("·")
+                    Text(Date(timeIntervalSince1970: TimeInterval(update.lastSyncedAt) / 1000),
+                         format: .relative(presentation: .named))
                 }
-
-                Text(Date(timeIntervalSince1970: TimeInterval(update.lastSyncedAt) / 1000),
-                     format: .relative(presentation: .named))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 12)
 
             // Right: mark-seen checkmark button
             Button {
                 onMarkSeen()
             } label: {
                 Image(systemName: "checkmark.circle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(markHovered ? Color.green : Color.appAccent.opacity(0.6))
-                    .animation(.easeOut(duration: 0.15), value: markHovered)
             }
             .buttonStyle(.borderless)
-            .onHover { markHovered = $0 }
             .help("Mark as seen")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .background(Color.primary.opacity(isHovered ? 0.05 : 0))
-        .onHover { isHovered = $0 }
     }
 }
 
 @MainActor
+/// Tracks the last interaction time OUTSIDE of SwiftUI state, so recording a
+/// mouse-move (which happens constantly) never triggers a view re-render.
+final class IdleClock { var last: Date = .now }
+
 struct ReaderView: View {
     @EnvironmentObject var appState: AppState
-    /// Drives the auto-hide of the page-counter and any in-content controls.
-    /// Wakes on hover / click / page change, fades back out after 2.5 s.
+    /// Drives the auto-hide of the floating chrome. Wakes on hover / click /
+    /// page change, fades back out after 2.5 s.
     @State private var controlsVisible: Bool = true
-    @State private var lastInteractionAt: Date = .now
+    @State private var idle = IdleClock()
     private let hideAfter: TimeInterval = 2.5
     @State private var isQuickSettingsPresented: Bool = false
+
+    /// Premium spring for the chrome — snappy but soft (Apple-grade).
+    private var chromeSpring: Animation { .spring(response: 0.34, dampingFraction: 0.86) }
 
     var body: some View {
         Group {
             if let chapter = appState.activeChapter, !chapter.pages.isEmpty {
-                ZStack(alignment: .topTrailing) {
-                    ZStack(alignment: .bottom) {
-                        Group {
-                            // V2 readers: clean implementations with zoom, click
-                            // zones, in-image balloon overlay, keyboard nav.
-                            switch appState.readerMode {
-                            case .standard, .reversed:
-                                PagedReaderV2(chapter: chapter, controlsVisible: controlsVisible)
-                            case .vertical, .webtoon:
-                                // Both are continuous vertical scroll (matches the
-                                // other desktop platforms). Vertical was previously a
-                                // no-op that silently fell back to paged.
-                                WebtoonReaderV2(chapter: chapter, controlsVisible: controlsVisible)
-                            }
+                ZStack(alignment: .bottom) {
+                    // Immersive page content — full-bleed, no window toolbar.
+                    Group {
+                        switch appState.readerMode {
+                        case .standard, .reversed:
+                            PagedReaderV2(chapter: chapter, controlsVisible: controlsVisible, onToggleChrome: toggleChrome)
+                        case .vertical, .webtoon:
+                            WebtoonReaderV2(chapter: chapter, controlsVisible: controlsVisible, onToggleChrome: toggleChrome)
                         }
-                        TranslationDebugBar()
-                            .padding(.bottom, 18)
-                            .allowsHitTesting(appState.debugHUDEnabled)
                     }
-
+                    TranslationDebugBar()
+                        .padding(.bottom, 84)
+                        .allowsHitTesting(appState.debugHUDEnabled)
+                }
+                // Floating auto-hiding chrome (Apple Books) — pinned to the edges.
+                .overlay(alignment: .top) {
+                    if controlsVisible {
+                        floatingTopBar(chapter: chapter)
+                            .padding(.top, 6)
+                            .padding(.horizontal, 14)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if controlsVisible {
+                        ReaderScrubBar(
+                            urls: chapter.pages.map(\.url),
+                            page: Binding(get: { appState.readerPageIndex },
+                                          set: { appState.readerPageIndex = $0 }),
+                            rtl: appState.readerMode.isRTL
+                        )
+                        .padding(.bottom, 16)
+                        .padding(.horizontal, 14)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
                     if isQuickSettingsPresented {
                         GeometryReader { proxy in
                             quickSettingsPanel
                                 .frame(maxHeight: min(500, proxy.size.height - 24), alignment: .top)
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                         }
-                        .padding(.top, 12)
+                        .padding(.top, 58)
                         .padding(.trailing, 16)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                         .zIndex(99)
                     }
                 }
-                .toolbar { readerToolbar(chapter: chapter) }
+                .toolbar(.hidden, for: .windowToolbar)
                 .onContinuousHover { phase in
                     if case .active = phase { wakeControls() }
                 }
-                .onChange(of: appState.readerPageIndex) { _, _ in
+                .onChange(of: appState.readerPageIndex) { _, newIndex in
                     wakeControls()
+                    // Re-prioritise colorization to the page you just moved to.
+                    if appState.colorizeModeOn { appState.colorizer.setFocus(newIndex) }
                     Task { await appState.refreshCurrentPageBookmarkedFlag() }
                 }
                 .onChange(of: appState.readerMode) { _, _ in wakeControls() }
@@ -1319,91 +905,164 @@ struct ReaderView: View {
         }
     }
 
-    @ToolbarContentBuilder
-    private func readerToolbar(chapter: ChapterSummary) -> some ToolbarContent {
-        ToolbarItemGroup {
-            Button {
-                Task { await appState.gotoChapterRelative(-1) }
-            } label: { Label("Previous Chapter", systemImage: "backward") }
-            .disabled(!appState.hasPrevChapter)
+    /// Tap-the-centre-of-the-page toggles the floating chrome (Apple Books).
+    private func toggleChrome() {
+        idle.last = .now
+        withAnimation(chromeSpring) { controlsVisible.toggle() }
+    }
 
-            Text(chapter.title.isEmpty ? "Chapter" : chapter.title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 120)
+    /// Floating, auto-hiding top control bar (Apple Books style).
+    @ViewBuilder
+    private func floatingTopBar(chapter: ChapterSummary) -> some View {
+        HStack(spacing: 2) {
+            // Proper back button — exits the immersive reader to the library.
+            Button { appState.pendingNavigation = .history } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left")
+                    Text("Back").font(.caption.weight(.semibold))
+                }
+                .frame(height: 30)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Back to library")
 
-            Button {
-                Task { await appState.gotoChapterRelative(1) }
-            } label: { Label("Next Chapter", systemImage: "forward") }
-            .disabled(!appState.hasNextChapter)
+            Divider().frame(height: 16).opacity(0.3)
 
-            Button {
+            // Chapter nav follows reading direction: the LEFT button advances the
+            // way pages advance (prev-chapter in LTR, next-chapter in RTL), and the
+            // RIGHT button is its opposite — so it mirrors the page-turn direction.
+            barIcon("chevron.backward",
+                    disabled: appState.readerMode.isRTL ? !appState.hasNextChapter : !appState.hasPrevChapter) {
+                Task { await appState.gotoChapterRelative(appState.readerMode.isRTL ? 1 : -1) }
+            }
+            .help(appState.readerMode.isRTL ? "Next chapter" : "Previous chapter")
+
+            VStack(spacing: 1) {
+                Text(chapter.title.isEmpty ? "Chapter" : chapter.title)
+                    .font(.caption.weight(.semibold)).lineLimit(1)
+                Text("\(appState.readerPageIndex + 1) of \(chapter.pages.count)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .frame(minWidth: 116)
+            .padding(.horizontal, 2)
+
+            barIcon("chevron.forward",
+                    disabled: appState.readerMode.isRTL ? !appState.hasPrevChapter : !appState.hasNextChapter) {
+                Task { await appState.gotoChapterRelative(appState.readerMode.isRTL ? -1 : 1) }
+            }
+            .help(appState.readerMode.isRTL ? "Previous chapter" : "Next chapter")
+
+            Divider().frame(height: 16).opacity(0.3)
+
+            barIcon(appState.currentPageBookmarked ? "bookmark.fill" : "bookmark",
+                    tint: appState.currentPageBookmarked ? .appAccent : .primary) {
                 Task { await appState.toggleCurrentPageBookmark() }
-            } label: {
-                Label(
-                    appState.currentPageBookmarked ? "Remove Bookmark" : "Bookmark Page",
-                    systemImage: appState.currentPageBookmarked ? "bookmark.fill" : "bookmark"
-                )
             }
-            .help(appState.currentPageBookmarked ? "Remove bookmark from current page" : "Bookmark current page")
+            .help(appState.currentPageBookmarked ? "Remove bookmark" : "Bookmark page")
 
-            // Translate current page (⌘T). Icon reflects the pipeline:
-            //   .idle      → outline bubble
-            //   running    → progress spinner
-            //   .done      → filled bubble in accent colour
-            translateToolbarButton
+            // Auto-scroll play/pause (web-style). Long-press / right-click opens
+            // the speed menu; a plain click just toggles.
+            Menu {
+                Button(appState.autoScrollOn ? "Stop Auto-Scroll" : "Start Auto-Scroll") {
+                    appState.toggleAutoScroll()
+                }
+                Divider()
+                Picker("Speed", selection: $appState.readerPrefs.autoScrollLevel) {
+                    ForEach(1...10, id: \.self) { lvl in Text("\(lvl) / 10").tag(lvl) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: appState.autoScrollOn ? "pause.fill" : "play.fill")
+                    .foregroundStyle(appState.autoScrollOn ? Color.appAccent : .primary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
+            } primaryAction: {
+                appState.toggleAutoScroll()
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help(appState.autoScrollOn ? "Stop auto-scroll (A)" : "Auto-scroll (A) — hold for speed")
 
-            // Chapter-wide auto-translate toggle. When on, ChapterTranslator
-            // runs through every page in the background as you read.
-            Button {
-                appState.translateModeOn.toggle()
-                if appState.translateModeOn {
-                    startChapterTranslation(chapter: chapter)
-                } else {
-                    appState.chapterTranslator.stop()
+            Menu {
+                Button { appState.translateCurrentPage() } label: {
+                    Label("Translate This Page", systemImage: "character.bubble")
+                }
+                .keyboardShortcut("t", modifiers: .command)
+                .disabled(appState.isTranslatingPage)
+                Divider()
+                Toggle(isOn: autoTranslateBinding(chapter: chapter)) {
+                    Label("Auto-Translate Chapter", systemImage: "rectangle.and.text.magnifyingglass")
+                }
+                Toggle(isOn: colorizeBinding) {
+                    Label("Colorize Chapter", systemImage: "paintbrush.pointed")
                 }
             } label: {
-                Label(
-                    appState.translateModeOn ? "Auto-Translate On" : "Auto-Translate Off",
-                    systemImage: appState.translateModeOn
-                        ? "rectangle.and.text.magnifyingglass.rtl"
-                        : "rectangle.and.text.magnifyingglass"
-                )
-                .foregroundStyle(appState.translateModeOn ? Color.appAccent : .primary)
+                Image(systemName: "wand.and.stars")
+                    .foregroundStyle((appState.translateModeOn || appState.colorizeModeOn) ? Color.appAccent : .primary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
             }
-            .help(appState.translateModeOn
-                  ? "Stop translating this chapter"
-                  : "Translate every page of this chapter in the background")
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("AI — translate & colorize")
 
-            Button {
-                appState.rtlReading.toggle()
-            } label: {
-                Label(
-                    appState.rtlReading ? "Left-to-Right" : "Right-to-Left",
-                    systemImage: "arrow.left.arrow.right"
-                )
-            }
-            .help(appState.rtlReading ? "Switch to left-to-right reading" : "Switch to right-to-left (manga direction)")
-
-            Picker("", selection: $appState.readerMode) {
-                ForEach(ReaderMode.allCases) { mode in
-                    Label(mode.label, systemImage: mode.systemImage).tag(mode)
+            Menu {
+                Picker("Reading Mode", selection: $appState.readerMode) {
+                    ForEach(ReaderMode.allCases) { mode in
+                        Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .tint(Color.appAccent)
-            .frame(width: 180)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isQuickSettingsPresented.toggle()
+                .pickerStyle(.inline)
+                if appState.readerMode == .standard || appState.readerMode == .reversed {
+                    Divider()
+                    Toggle("Right-to-Left (Manga)", isOn: $appState.rtlReading)
+                    Toggle("Two-Page Layout", isOn: $appState.readerPrefs.twoPageLayout)
                 }
             } label: {
-                Label("Quick Settings", systemImage: "gearshape")
-                    .foregroundStyle(isQuickSettingsPresented ? Color.appAccent : .primary)
+                Image(systemName: appState.readerMode.systemImage)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
             }
-            .help("Quick Settings Panel")
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Reading mode & layout")
+
+            barIcon("textformat.size", tint: isQuickSettingsPresented ? .appAccent : .primary) {
+                withAnimation(.easeInOut(duration: 0.2)) { isQuickSettingsPresented.toggle() }
+            }
+            .help("Reader settings")
         }
+        .font(.system(size: 15, weight: .medium))
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+        .shadow(color: .black.opacity(0.4), radius: 16, y: 5)
+    }
+
+    /// A flat icon button sized for the floating bar.
+    @ViewBuilder
+    private func barIcon(_ system: String, tint: Color = .primary, disabled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .frame(width: 30, height: 30)
+                .foregroundStyle(disabled ? AnyShapeStyle(Color.secondary.opacity(0.4)) : AnyShapeStyle(tint))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    /// Auto-translate the whole chapter on/off (kicks off / stops the background pass).
+    private func autoTranslateBinding(chapter: ChapterSummary) -> Binding<Bool> {
+        Binding(
+            get: { appState.translateModeOn },
+            set: { on in
+                appState.translateModeOn = on
+                if on { startChapterTranslation(chapter: chapter) }
+                else { appState.chapterTranslator.stop() }
+            }
+        )
+    }
+
+    /// Colorize the whole chapter on/off (`toggleColorize` flips the internal state).
+    private var colorizeBinding: Binding<Bool> {
+        Binding(get: { appState.colorizeModeOn }, set: { _ in appState.toggleColorize() })
     }
 
     /// Toolbar button that triggers per-page translation (⌘T). The icon
@@ -1453,17 +1112,17 @@ struct ReaderView: View {
             sourceLang: src,
             targetCode: targetCode,
             settings: appState.translateSettings,
-            pipelineConfig: appState.readerPrefs.ocrPipelineConfig,
-            responseTextScale: CGFloat(appState.readerPrefs.translationResponseScale)
+            responseTextScale: CGFloat(appState.readerPrefs.translationResponseScale),
+            startAt: appState.readerPageIndex
         )
     }
 
     /// Mark this moment as the last interaction and ensure the controls
     /// are visible. Called from hover, page change, mode change.
     private func wakeControls() {
-        lastInteractionAt = .now
+        idle.last = .now          // plain object write — no re-render on mouse-move
         if !controlsVisible {
-            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = true }
+            withAnimation(chromeSpring) { controlsVisible = true }
         }
     }
 
@@ -1473,9 +1132,9 @@ struct ReaderView: View {
     private func runIdleTimer() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            if controlsVisible,
-               Date().timeIntervalSince(lastInteractionAt) > hideAfter {
-                withAnimation(.easeInOut(duration: 0.3)) { controlsVisible = false }
+            if controlsVisible, !isQuickSettingsPresented,
+               Date().timeIntervalSince(idle.last) > hideAfter {
+                withAnimation(chromeSpring) { controlsVisible = false }
             }
         }
     }
@@ -1678,14 +1337,14 @@ struct ReaderView: View {
                         .tint(Color.appAccent)
                         .labelsHidden()
                         
-                        HStack {
-                            Toggle("Right-to-Left (Manga)", isOn: $appState.rtlReading)
-                                .toggleStyle(.switch)
-                                .controlSize(.small)
-                            Spacer()
-                        }
-                        
+                        // RTL + two-page are paged-only (RTL is meaningless in vertical).
                         if appState.readerMode == .standard || appState.readerMode == .reversed {
+                            HStack {
+                                Toggle("Right-to-Left (Manga)", isOn: $appState.rtlReading)
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
+                                Spacer()
+                            }
                             HStack {
                                 Toggle("Two-Page Layout", isOn: $appState.readerPrefs.twoPageLayout)
                                     .toggleStyle(.switch)
@@ -1786,7 +1445,10 @@ struct ReaderView: View {
                                                 .font(.caption)
                                                 .padding(.horizontal, 10)
                                                 .padding(.vertical, 5)
-                                                .foregroundStyle(selected ? Color.white : Color.primary)
+                                                // Selected sits on an accent capsule, so it needs the
+                                                // contrasting colour, not a fixed white — the accent is
+                                                // user-selectable and Yuki's is near-white.
+                                                .foregroundStyle(selected ? Color.onAccent : Color.primary)
                                                 .background(
                                                     selected ? AnyShapeStyle(Color.appAccent) : AnyShapeStyle(Color.primary.opacity(0.08)),
                                                     in: Capsule()
@@ -1856,384 +1518,209 @@ private struct ReaderEmptyLanding: View {
         Array(appState.history.sorted { $0.updatedAt > $1.updatedAt }.prefix(3))
     }
 
-    private var recentCovers: [String] {
-        Array(appState.history.sorted { $0.updatedAt > $1.updatedAt }.prefix(12).map { $0.mangaCoverUrl })
-    }
-
     var body: some View {
-        ZStack {
-            // ── Cinematic cover mosaic background ─────────────────────────
-            ZStack {
-                Color.appBackground
+        Group {
+            if appState.history.isEmpty {
+                // Nothing to resume yet. Stock empty state plus the very same
+                // destinations as stock buttons — the LocalView shape.
+                VStack(spacing: 12) {
+                    EmptyStateView(
+                        icon: "book.pages",
+                        title: "Ready to Read",
+                        message: "Resume a recent chapter, browse sources, or open local files. The reader sidebar appears once a chapter is loaded."
+                    )
+                    HStack(spacing: 12) {
+                        Button {
+                            appState.pendingNavigation = .explore
+                        } label: { Label("Browse", systemImage: "safari") }
+                        Button {
+                            appState.pendingNavigation = .favourites
+                        } label: { Label("Library", systemImage: "heart.text.square") }
+                        Button {
+                            appState.pendingNavigation = .local
+                        } label: { Label("Local", systemImage: "folder") }
+                    }
+                }
+            } else {
+                landingList
+            }
+        }
+    }
 
-                if !recentCovers.isEmpty {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible()),
-                            GridItem(.flexible()),
-                            GridItem(.flexible()),
-                            GridItem(.flexible())
-                        ],
-                        spacing: 4
+    /// The populated landing: Continue, the destinations, then recents — all as
+    /// plain `List` sections. This replaces the cover mosaic + vignette + fade
+    /// backdrop, the glowing hero badge and the horizontal card rail; the list
+    /// draws the system background and supplies hover/selection itself.
+    private var landingList: some View {
+        List {
+            if let latest = latestHistory {
+                Section {
+                    ReaderActionRow(
+                        title: "Continue",
+                        subtitle: latest.mangaTitle,
+                        systemImage: "play.fill"
                     ) {
-                        ForEach(recentCovers, id: \.self) { url in
-                            AsyncImage(url: URL(string: url)) { phase in
-                                if case .success(let img) = phase {
-                                    img.resizable().scaledToFill().frame(height: 180)
-                                } else {
-                                    Color.primary.opacity(0.04).frame(height: 180)
-                                }
-                            }
-                            .clipped()
-                        }
-                    }
-                    .blur(radius: 28)
-                    .opacity(0.22)
-                    .clipped()
-                }
-
-                // Vignette over mosaic — uses appBackground so it adapts to light/dark
-                RadialGradient(
-                    colors: [Color.appBackground.opacity(0.0), Color.appBackground.opacity(0.80)],
-                    center: .center,
-                    startRadius: 80,
-                    endRadius: 700
-                )
-                LinearGradient(
-                    stops: [
-                        .init(color: Color.appBackground, location: 0.0),
-                        .init(color: .clear, location: 0.20),
-                        .init(color: .clear, location: 0.80),
-                        .init(color: Color.appBackground, location: 1.0)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-            .ignoresSafeArea()
-
-            // ── Content ───────────────────────────────────────────────────
-            VStack(spacing: 32) {
-                hero
-                quickActions
-                recentSection
-            }
-            .frame(maxWidth: 700)
-            .padding(40)
-        }
-    }
-
-    private var hero: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                // Outer aura — wide soft bloom behind the circle
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.appAccent.opacity(0.15), Color.appAccent.opacity(0.07), Color.clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 200, height: 200)
-                    .blur(radius: 30)
-
-                // Outer ambient glow
-                RadialGradient(
-                    colors: [Color.appAccent.opacity(0.3), Color.clear],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 100
-                )
-                .blur(radius: 12)
-                .frame(width: 160, height: 160)
-
-                // Gradient circle background
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.appAccent, Color.appAccent.opacity(0.6)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 116, height: 116)
-                    .shadow(color: Color.appAccent.opacity(0.5), radius: 32)
-
-                Image(systemName: "book.pages.fill")
-                    .font(.system(size: 50))
-                    .foregroundStyle(.white)
-            }
-
-            Text("Ready to Read")
-                .font(.system(size: 40, weight: .black, design: .rounded))
-                .foregroundStyle(.primary)
-
-            Text("Resume a recent chapter, browse sources, or open local files. The reader sidebar appears once a chapter is loaded.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
-        }
-    }
-
-    private var quickActions: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                if let latest = latestHistory {
-                    Button {
                         Task { await appState.openHistoryEntry(latest) }
-                    } label: {
-                        ReaderActionCard(
-                            title: "Continue",
-                            subtitle: latest.mangaTitle,
-                            systemImage: "play.fill",
-                            isPrimary: true
-                        )
                     }
-                    .buttonStyle(.plain)
                 }
-
-                Button {
-                    appState.pendingNavigation = .explore
-                } label: {
-                    ReaderActionCard(
-                        title: "Browse",
-                        subtitle: "Find manga from sources",
-                        systemImage: "safari",
-                        isPrimary: latestHistory == nil
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    appState.pendingNavigation = .favourites
-                } label: {
-                    ReaderActionCard(
-                        title: "Library",
-                        subtitle: "\(appState.favourites.count) favourites",
-                        systemImage: "heart.text.square",
-                        isPrimary: false
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    appState.pendingNavigation = .local
-                } label: {
-                    ReaderActionCard(
-                        title: "Local",
-                        subtitle: "Open CBZ files",
-                        systemImage: "folder",
-                        isPrimary: false
-                    )
-                }
-                .buttonStyle(.plain)
             }
-        }
-    }
 
-    @ViewBuilder
-    private var recentSection: some View {
-        if !recentHistory.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Recently Read")
-                        .font(.headline)
-                    Spacer()
-                    Button("View History") {
-                        appState.pendingNavigation = .history
-                    }
-                    .buttonStyle(.link)
-                }
+            Section {
+                ReaderActionRow(
+                    title: "Browse",
+                    subtitle: "Find manga from sources",
+                    systemImage: "safari"
+                ) { appState.pendingNavigation = .explore }
 
-                VStack(spacing: 8) {
+                ReaderActionRow(
+                    title: "Library",
+                    subtitle: "\(appState.favourites.count) favourites",
+                    systemImage: "heart.text.square"
+                ) { appState.pendingNavigation = .favourites }
+
+                ReaderActionRow(
+                    title: "Local",
+                    subtitle: "Open CBZ files",
+                    systemImage: "folder"
+                ) { appState.pendingNavigation = .local }
+            } footer: {
+                // The hero's explanatory copy, kept as a stock section footer.
+                Text("The reader sidebar appears once a chapter is loaded.")
+            }
+
+            if !recentHistory.isEmpty {
+                Section {
                     ForEach(recentHistory) { row in
-                        ReaderRecentRow(row: row) {
+                        ReaderRecentRow(
+                            row: row,
+                            accent: appState.activeCoverAccentPrimary
+                        ) {
                             Task { await appState.openHistoryEntry(row) }
                         }
                     }
+                } header: {
+                    HStack {
+                        Text("Recently Read")
+                        Spacer()
+                        Button("View History") {
+                            appState.pendingNavigation = .history
+                        }
+                        .buttonStyle(.link)
+                    }
                 }
             }
-            .padding(16)
-            // Floating card over the blurred cover mosaic — native glass replaces
-            // the material + gradient + hairline border it used to hand-roll.
-            .adaptiveGlass(.rect(cornerRadius: 18))
         }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
     }
 }
 
+/// A landing destination as a plain list row — icon, title, one secondary line.
+/// Was a 160×112 card with an "aurora" accent fill (three stacked gradients plus
+/// a white top sheen), a gradient hairline border and a hover scale. The
+/// `isPrimary` variant drew `.white` text on that accent fill, which vanished on
+/// near-white accents like Yuki; a stock row has no accent surface at all, so the
+/// contrast problem goes with it. `List` supplies hover and selection.
 @MainActor
-private struct ReaderActionCard: View {
+private struct ReaderActionRow: View {
     let title: String
     let subtitle: String
     let systemImage: String
-    let isPrimary: Bool
-    @State private var isHovered = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(isPrimary ? .white : Color.appAccent)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(isPrimary ? .white : .primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(isPrimary ? .white.opacity(0.75) : .secondary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(width: 160, height: 112, alignment: .leading)
-        .padding(16)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .background(
-            Group {
-                if isPrimary {
-                    // AURORA FILL: base accent linear layered with a bright
-                    // accent radial spot at .topLeading + dim spot bottomTrailing.
-                    ZStack {
-                        LinearGradient(
-                            stops: [
-                                .init(color: Color.appAccent.opacity(0.95), location: 0),
-                                .init(color: Color.appAccent.opacity(0.72), location: 0.6),
-                                .init(color: Color.appAccent.opacity(0.52), location: 1)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        RadialGradient(
-                            stops: [
-                                .init(color: Color.appAccent.opacity(0.45), location: 0),
-                                .init(color: Color.appAccent.opacity(0.18), location: 0.5),
-                                .init(color: .clear, location: 1)
-                            ],
-                            center: .topLeading, startRadius: 0, endRadius: 170
-                        )
-                        RadialGradient(
-                            stops: [
-                                .init(color: Color.appAccent.opacity(0.20), location: 0),
-                                .init(color: .clear, location: 1)
-                            ],
-                            center: .bottomTrailing, startRadius: 0, endRadius: 150
-                        )
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(alignment: .top) {
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.20), Color.clear],
-                            startPoint: .top,
-                            endPoint: .center
-                        )
-                        .frame(height: 35)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    }
-                } else {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.primary.opacity(0.10), Color.primary.opacity(0.04)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: [Color.primary.opacity(0.20), Color.primary.opacity(0.06)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: 0.7
-                                )
-                        )
-                }
-            }
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(isPrimary ? Color.white.opacity(0.20) : Color.clear, lineWidth: isPrimary ? 1 : 0)
-        )
-        .scaleEffect(isHovered ? 1.03 : 1.0)
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isHovered)
-        .onHover { isHovered = $0 }
-    }
-}
-
-@MainActor
-private struct ReaderRecentRow: View {
-    let row: HelperHistoryRow
     let action: () -> Void
-    @State private var isHovered = false
 
     var body: some View {
         Button {
             action()
         } label: {
             HStack(spacing: 12) {
-                // Cover 42x58 cornerRadius 6
-                AsyncImage(url: URL(string: row.mangaCoverUrl)) { phase in
-                    if case let .success(image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.tertiary.opacity(0.35))
-                            .overlay(Image(systemName: "book.closed").foregroundStyle(.secondary))
-                    }
-                }
-                .frame(width: 42, height: 58)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundStyle(Color.appAccent)
+                    .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A recent chapter in the `HistoryRowView` shape: cover with the progress bar
+/// overlaid at its foot, title, one secondary line, trailing percentage. The
+/// gradient progress capsule is now a stock `ProgressView` tinted with the same
+/// accent History uses, and the cover drop shadow, the custom row padding and
+/// the hand-rolled hover background are gone — `List` does hover itself.
+@MainActor
+private struct ReaderRecentRow: View {
+    let row: HelperHistoryRow
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 12) {
+                ZStack(alignment: .bottom) {
+                    AsyncImage(url: URL(string: row.mangaCoverUrl)) { phase in
+                        if case let .success(image) = phase {
+                            image.resizable().scaledToFill()
+                        } else {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                                .overlay(Image(systemName: "book.closed").foregroundStyle(.secondary))
+                        }
+                    }
+                    .frame(width: 42, height: 58)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+
+                    ProgressView(value: Double(row.percent))
+                        .progressViewStyle(.linear)
+                        .tint(accent)
+                        .scaleEffect(y: 0.5)
+                        .frame(width: 42)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
                     Text(row.mangaTitle)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text(row.chapterTitle.isEmpty ? "Chapter" : row.chapterTitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.primary.opacity(0.08))
-                            .frame(height: 2)
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.appAccent, Color.appAccent.opacity(0.55)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(height: 2)
-                            .frame(maxWidth: .infinity)
-                            .scaleEffect(x: Double(row.percent), anchor: .leading)
-                    }
-                    .frame(maxWidth: .infinity)
                 }
 
-                Spacer()
+                Spacer(minLength: 12)
 
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                Text("\(Int((row.percent * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.04) : Color.clear)
-            )
-            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isHovered)
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -2344,13 +1831,15 @@ private struct ColorSchemePreviewCard: View {
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var ocrModels = NativeOcrProvider.shared
+    @ObservedObject private var colorizer = NativeColorizer.shared
     @State private var selected: SettingsCategory = .appearance
     @State private var syncPassword: String = ""
     @State private var cacheUsageBytes: Int = 0
     @State private var dbSizeBytes: Int = 0
     // Cloud-sync email/password sign-in
-    @State private var supabaseEmail: String = ""
-    @State private var supabasePassword: String = ""
+    @State private var nyoraSyncEmail: String = ""
+    @State private var nyoraSyncPassword: String = ""
     // Tracker sign-in state
     @State private var kitsuEmail: String = ""
     @State private var kitsuPassword: String = ""
@@ -2362,14 +1851,13 @@ struct SettingsView: View {
     var body: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 200, idealWidth: 230, maxWidth: 260)
-            ScrollView {
-                detailPage(for: selected)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 18)
-            }
-            .frame(minWidth: 440)
+                .frame(minWidth: 160, idealWidth: 200, maxWidth: 230)
+            detailPage(for: selected)
+                .frame(minWidth: 300)
         }
+        // Total Settings min (≈460) must stay under the NavigationSplitView detail
+        // column's min (480 in RootView); otherwise, when the window narrows, the
+        // detail pane is 480 while Settings wants more and the right side clips.
         .task {
             cacheUsageBytes = URLCache.shared.currentDiskUsage
             dbSizeBytes = (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int) ?? 0
@@ -2383,49 +1871,84 @@ struct SettingsView: View {
         }
     }
 
+    /// A real source list, the way System Settings draws its category column:
+    /// `List(selection:)` + `.listStyle(.sidebar)`. The hand-rolled buttons with
+    /// their own rounded accent-tinted background and backdrop are gone — the
+    /// system draws selection, hover and the sidebar material itself.
     private var sidebar: some View {
+        // Custom rows (not a native `.sidebar` List): native sidebar selection is locked
+        // to the SYSTEM accent and ignores `.tint`, so an explicit Color.appAccent fill is
+        // the only way to make the selection follow the chosen scheme.
         ScrollView {
             VStack(spacing: 2) {
                 ForEach(SettingsCategory.allCases) { cat in
-                    Button {
-                        selected = cat
-                    } label: {
-                        Label(cat.title, systemImage: cat.systemImage)
-                            .tint(selected == cat ? Color.appAccent : nil)
-                            .foregroundStyle(selected == cat ? Color.appAccent : Color.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(selected == cat ? Color.appAccent.opacity(0.16) : Color.clear)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                    SettingsCatRow(
+                        title: cat.title,
+                        systemImage: cat.systemImage,
+                        isSelected: selected == cat
+                    ) { selected = cat }
                 }
             }
             .padding(8)
         }
         .scrollContentBackground(.hidden)
-        .tint(Color.appAccent)
-        .background(Color.appBackground)
+        .frame(minWidth: 210, idealWidth: 230)
     }
 
+    private struct SettingsCatRow: View {
+        let title: String
+        let systemImage: String
+        let isSelected: Bool
+        let action: () -> Void
+        @State private var hover = false
+        var body: some View {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 18)
+                    .foregroundStyle(isSelected ? Color.onAccent : Color.secondary)
+                Text(title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? Color.onAccent : Color.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.appAccent : (hover ? Color.primary.opacity(0.06) : Color.clear))
+            )
+            .contentShape(Rectangle())
+            .onHover { hover = $0 }
+            .onTapGesture { action() }
+        }
+    }
+
+    /// `Form` + `.formStyle(.grouped)` is the macOS settings idiom — it supplies
+    /// the grouped surface, row metrics, label column and scrolling that this
+    /// pane used to draw by hand. The category title stays: the window title is
+    /// owned by `RootView` ("Settings"), so this is the only thing naming the
+    /// sub-page, not a duplicate of the toolbar.
     @ViewBuilder
     private func detailPage(for cat: SettingsCategory) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(cat.title).font(.title2.bold())
+        Form {
+            Section {
+                Text(cat.title)
+                    .font(.title2.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .listRowBackground(Color.clear)
+            }
+
             switch cat {
             case .appearance:    appearanceSection
             case .library:       librarySection
             case .reader:        readerSection
             case .sources:       sourcesSection
             case .translation:   translationSection
+            case .colorization:  colorizationSection
             case .network:       networkSection
             case .downloads:     downloadsSection
             case .tracker:       trackerSection
-            case .sync:          supabaseSection
+            case .sync:          nyoraSyncSection
             case .backup:        backupSection
             case .notifications: notificationsSection
             case .privacy:       privacySection
@@ -2433,18 +1956,25 @@ struct SettingsView: View {
             case .about:         aboutSection
             }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     // MARK: - Sub-pages
 
+    @ViewBuilder
     private var appearanceSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Theme") {
                 pickerRow("App theme", selection: $appState.readerPrefs.appAppearance) {
                     Text("Follow system").tag("auto"); Text("Light").tag("light"); Text("Dark").tag("dark")
                 }
+                toggleRow("Glass mode",
+                          description: "Native macOS translucency — the desktop blurs through the panes like Finder. Off = solid background.",
+                          isOn: $appState.readerPrefs.glassMode)
             }
-            settingGroup("Color scheme") {
+            settingGroup("Color scheme",
+                         footer: "Each scheme uses its light or dark variant to match the app appearance.") {
                 accentColorContent
             }
             settingGroup("Manga list") {
@@ -2475,29 +2005,22 @@ struct SettingsView: View {
     @ViewBuilder
     private var accentColorContent: some View {
         let dark = colorScheme == .dark
-        VStack(alignment: .leading, spacing: 10) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(ReaderPrefs.colorSchemes) { scheme in
-                        ColorSchemePreviewCard(
-                            scheme: scheme,
-                            dark: dark,
-                            primary: primaryColor(for: scheme, dark: dark),
-                            isSelected: appState.readerPrefs.accentColor == scheme.id
-                        ) {
-                            appState.readerPrefs.accentColor = scheme.id
-                        }
+        // The strip keeps its themed preview cards — they ARE the control — but
+        // the section now supplies the surface and the explanatory footer.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 8) {
+                ForEach(ReaderPrefs.colorSchemes) { scheme in
+                    ColorSchemePreviewCard(
+                        scheme: scheme,
+                        dark: dark,
+                        primary: primaryColor(for: scheme, dark: dark),
+                        isSelected: appState.readerPrefs.accentColor == scheme.id
+                    ) {
+                        appState.readerPrefs.accentColor = scheme.id
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
             }
-
-            Text("Each scheme uses its light or dark variant to match the app appearance.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 10)
+            .padding(.vertical, 4)
         }
     }
 
@@ -2514,8 +2037,9 @@ struct SettingsView: View {
         return .appAccent
     }
 
+    @ViewBuilder
     private var librarySection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("History") {
                 stepperRow("Retention",
                            value: $appState.readerPrefs.historyRetentionDays,
@@ -2533,17 +2057,16 @@ struct SettingsView: View {
             settingGroup("Search") {
                 toggleRow("Hide NSFW results", description: "Adult-tagged manga skipped in searches.", isOn: $appState.readerPrefs.nsfwFilter)
             }
-            settingGroup("Categories") {
+            settingGroup("Categories",
+                         footer: "Create, rename, and delete categories from a manga's details page.") {
                 infoRow("Total", value: "\(appState.categories.count)")
-                Text("Create, rename, and delete categories from a manga's details page.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.bottom, 10)
             }
         }
     }
 
+    @ViewBuilder
     private var readerSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Default mode") {
                 pickerRow("Reading mode", selection: $appState.readerPrefs.defaultReaderMode) {
                     Text("Paged").tag("standard")
@@ -2578,9 +2101,7 @@ struct SettingsView: View {
                 toggleRow("Pull-to-refresh in webtoon", description: "Drag the top edge to reload pages.", isOn: $appState.readerPrefs.webtoonPullGesture)
             }
             settingGroup("Navigation") {
-                toggleRow("Tap zones", description: "Click left / right thirds of the page to flip.", isOn: $appState.readerPrefs.tapZonesEnabled)
-                toggleRow("Tap zones LTR", description: "Left tap goes back regardless of reading direction.", isOn: $appState.readerPrefs.readerTapsLtr)
-                toggleRow("Invert page direction", description: "Swap the meaning of left/right.", isOn: $appState.readerPrefs.invertNavigation)
+                toggleRow("Tap zones", description: "Click the left / right thirds of the page to turn. Direction follows the reading mode (RTL flips them).", isOn: $appState.readerPrefs.tapZonesEnabled)
                 toggleRow("Auto-hide controls", description: "Page counter fades after 2.5 s of mouse idle.", isOn: $appState.readerPrefs.autoHideControls)
                 toggleRow("Show page numbers overlay", description: "Page counter + seekbar at the bottom.", isOn: $appState.readerPrefs.showPageNumbers)
             }
@@ -2590,8 +2111,9 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var sourcesSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Content & language") {
                 toggleRow("Show 18+ sources", description: "Include adult-only sources in Explore, the catalog, sidebar, and global search.", isOn: Binding(
                     get: { !appState.hideNsfwSources },
@@ -2613,9 +2135,11 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var translationSection: some View {
-        VStack(spacing: 12) {
-            settingGroup("Pipeline") {
+        Group {
+            settingGroup("Pipeline",
+                         footer: "Native GPU-accelerated ONNX OCR (manga-ocr / PaddleOCR) → Google Translate (most accurate for manga, no key). Optionally, your own LLM (below) refines each page for natural, coherent phrasing.") {
                 toggleRow("Instant translation on chapter open",
                           description: "Auto-translate every page as the chapter loads. Heavy — leave off if your Mac is busy.",
                           isOn: $appState.readerPrefs.instantTranslation)
@@ -2626,7 +2150,7 @@ struct SettingsView: View {
                           label: "\(Int(appState.readerPrefs.translationResponseScale * 100))%")
                 pickerRow("Source language",
                           selection: bind(\.translateSettings.sourceLang)) {
-                    ForEach(TranslationSettings.supportedLanguages, id: \.self) { Text($0).tag($0) }
+                    ForEach(TranslationSettings.sourceLanguages, id: \.self) { Text($0).tag($0) }
                 }
                 pickerRow("Target language",
                           selection: bind(\.translateSettings.targetLang)) {
@@ -2634,31 +2158,9 @@ struct SettingsView: View {
                         Text($0).tag($0)
                     }
                 }
-                Text("Vision OCR + Google Translate runs locally and needs no key. Apple Intelligence refines OCR output on-device — no provider configuration required.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 10)
             }
-            settingGroup("Speed & Quality") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("Speed vs Quality", selection: $appState.readerPrefs.translationTier) {
-                        Text("Fast").tag(OcrProvider.Tier.fast)
-                        Text("Tuned (Recommended)").tag(OcrProvider.Tier.tuned)
-                        Text("Balanced").tag(OcrProvider.Tier.balanced)
-                        Text("Quality").tag(OcrProvider.Tier.quality)
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(Color.appAccent)
-                    .labelsHidden()
-                    Text(appState.readerPrefs.translationTier.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                toggleRow("Apple Intelligence polish",
-                          description: "After translation, rewrite each line on-device with the Foundation Models LLM for natural phrasing. Adds 1–3 s per page. Works on any pipeline tier.",
-                          isOn: $appState.readerPrefs.applePolish)
-            }
+            translationModelsGroup
+            byokGroup
             settingGroup("Debug HUD") {
                 toggleRow("Translation pipeline HUD",
                           description: "Floating chip strip in the reader showing Download → OCR → Translate → Refine timings.",
@@ -2667,8 +2169,146 @@ struct SettingsView: View {
         }
     }
 
+    /// Pre-download the on-device OCR models so the first translation of a language is instant
+    /// and works offline. Models are fetched once (from the same CDNs the web app uses) and cached.
+    @ViewBuilder
+    private var translationModelsGroup: some View {
+        settingGroup("Offline OCR models",
+                     footer: "Download a language's OCR model once, then translation is instant and works offline. Japanese is the largest; Chinese also covers English.") {
+            ForEach(NativeOcrProvider.downloadableLangs, id: \.key) { lang in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lang.title)
+                        Text("≈ \(lang.approxMB) MB")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if ocrModels.downloadingLang == lang.key {
+                        VStack(alignment: .trailing, spacing: 3) {
+                            ProgressView(value: max(0, ocrModels.downloadProgress))
+                                .frame(width: 130)
+                            Text(ocrModels.downloadLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    } else if ocrModels.installedLangs.contains(lang.key) {
+                        Label("Downloaded", systemImage: "checkmark.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("Download") {
+                            Task { try? await NativeOcrProvider.shared.preload(lang: lang.key) }
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.appAccent)
+                        .disabled(ocrModels.downloadingLang != nil)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+            if let err = ocrModels.downloadError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    /// Picking a provider fills the endpoint (and the model hint when the model
+    /// field is still empty), while keeping the endpoint field free-editable.
+    private var providerBinding: Binding<String> {
+        Binding(
+            get: { appState.translateSettings.endpoint },
+            set: { url in
+                appState.translateSettings.endpoint = url
+                if appState.translateSettings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let hint = TranslationSettings.providers.first(where: { $0.url == url })?.modelHint,
+                   !hint.isEmpty {
+                    appState.translateSettings.model = hint
+                }
+            }
+        )
+    }
+
+    /// On-device AI colorization (manga-colorization-v2) — its own settings section
+    /// (it is NOT translation). Download the model here; toggle colorization per
+    /// chapter from the reader toolbar / tools sheet.
+    @ViewBuilder
+    private var colorizationSection: some View {
+        settingGroup("AI colorization",
+                     footer: "Colorize black-and-white manga on device with manga-colorization-v2, GPU-accelerated. Download the model once, then toggle “Colorize” per chapter from the reader.") {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Colorizer model")
+                    Text("≈ \(NativeColorizer.modelApproxMB) MB").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                switch colorizer.modelState {
+                case .downloading(let p):
+                    VStack(alignment: .trailing, spacing: 3) {
+                        ProgressView(value: max(0, p)).frame(width: 130)
+                        Text("Downloading…").font(.caption2).foregroundStyle(.secondary)
+                    }
+                case .ready:
+                    HStack(spacing: 12) {
+                        Label("Downloaded", systemImage: "checkmark.circle.fill")
+                            .font(.callout).foregroundStyle(.green)
+                        Button("Remove") { colorizer.deleteModel() }
+                            .buttonStyle(.borderless).tint(.red)
+                    }
+                case .failed(let msg):
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Button("Retry") { Task { await colorizer.downloadModelIfNeeded() } }
+                            .buttonStyle(.bordered).tint(.appAccent)
+                        Text(msg).font(.caption2).foregroundStyle(.red).lineLimit(1)
+                    }
+                case .notInstalled:
+                    Button("Download") { Task { await colorizer.downloadModelIfNeeded() } }
+                        .buttonStyle(.bordered).tint(.appAccent)
+                }
+            }
+            .padding(.vertical, 3)
+        }
+    }
+
+    /// Bring-your-own-key LLM refinement (OpenAI / Anthropic compatible), the
+    /// mac equivalent of the web's `cfg` in core/translate/mt.js.
+    @ViewBuilder
+    private var byokGroup: some View {
+        settingGroup("AI refinement (BYOK)",
+                     footer: "Optional. After Google translates a page, your own LLM rewrites every bubble together — more coherent and natural, using the reference below for names and terms. OpenAI- and Anthropic-compatible. Your key is stored only on this Mac.") {
+            pickerRow("Provider", selection: providerBinding) {
+                ForEach(TranslationSettings.providers) { p in Text(p.name).tag(p.url) }
+            }
+            textFieldRow("API endpoint", text: bind(\.translateSettings.endpoint),
+                         placeholder: "https://api.openai.com/v1")
+            textFieldRow("Model", text: bind(\.translateSettings.model),
+                         placeholder: appState.translateSettings.effectiveModel)
+            secureFieldRow("API key", text: bind(\.translateSettings.apiKey), placeholder: "sk-…")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Series reference — character names, honorifics, terminology")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: bind(\.translateSettings.context))
+                    .font(.callout)
+                    .frame(minHeight: 60, maxHeight: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1)))
+            }
+            toggleRow("Skip AI refinement",
+                      description: "Use raw Google Translate only — don't call the LLM even when a key is set.",
+                      isOn: bind(\.translateSettings.isOffline))
+        }
+    }
+
+    @ViewBuilder
     private var networkSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Proxy") {
                 pickerRow("Proxy type", selection: $appState.readerPrefs.proxyType) {
                     Text("Direct").tag("direct"); Text("HTTP").tag("http"); Text("SOCKS5").tag("socks5")
@@ -2708,8 +2348,9 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var downloadsSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Concurrency") {
                 stepperRow("Max concurrent downloads",
                            value: $appState.readerPrefs.maxConcurrentDownloads,
@@ -2733,15 +2374,18 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var trackerSection: some View {
-        VStack(spacing: 12) {
-            Text("Link a tracking service to sync your reading progress. Tokens are stored in the macOS Keychain.")
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
-
-            ForEach(TrackerService.allCases) { service in
-                settingGroup(service.displayName) {
+        Group {
+            ForEach(TrackerService.allCases.filter { $0 != .shikimori && $0 != .bangumi && $0 != .kitsu }) { service in
+                // The Keychain note is the same for every service, so it rides
+                // the first section's footer instead of floating above the page.
+                settingGroup(
+                    service.displayName,
+                    footer: service == TrackerService.allCases.first
+                        ? "Link a tracking service to sync your reading progress. Tokens are stored in the macOS Keychain."
+                        : nil
+                ) {
                     trackerGroupContent(service)
                 }
             }
@@ -2832,7 +2476,10 @@ struct SettingsView: View {
         Task { @MainActor in
             defer { trackerBusy = nil }
             do {
-                let result = try await TrackerOAuth.shared.loginWithPassword(service, username: em, password: password)
+                // Route password sign-in through the local helper so its Cloudflare
+                // handling clears Kitsu's challenged token endpoint (a direct POST 403s).
+                let result = try await appState.helper.trackerPasswordLogin(
+                    slug: service.endpointSlug, username: em, password: password)
                 appState.tracker.setToken(service, result.accessToken)
                 appState.tracker.setRefreshToken(service, result.refreshToken)
                 appState.tracker.setEnabled(service, true)
@@ -2844,125 +2491,101 @@ struct SettingsView: View {
         }
     }
 
-    private var supabaseSection: some View {
-        VStack(spacing: 12) {
-            if let status = appState.supabaseStatus {
-                settingGroup("Account") {
-                    if status.isAuthenticated {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(status.userId)
-                                .font(.headline)
-                            Text("Signed in")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(14)
-
-                        rowSeparator
-
-                        buttonRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right", tint: .red) {
-                            Task { await appState.supabaseSignOut() }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Not signed in")
-                                .font(.headline)
-                            Text("Sign in to sync your library across devices.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(14)
-
-                        rowSeparator
-
-                        textFieldRow("Email", text: $supabaseEmail, placeholder: "you@example.com")
-                        secureFieldRow("Password", text: $supabasePassword, placeholder: "••••••••")
-
-                        buttonRow("Sign in", systemImage: "person.crop.circle.badge.plus") {
-                            submitSupabaseAuth(register: false)
-                        }
-                        .opacity(appState.isSupabaseSigningIn ? 0.5 : 1.0)
-
-                        buttonRow("Create account", systemImage: "person.badge.plus") {
-                            submitSupabaseAuth(register: true)
-                        }
-                        .opacity(appState.isSupabaseSigningIn ? 0.5 : 1.0)
-                    }
-                }
-
+    @ViewBuilder
+    private var nyoraSyncSection: some View {
+        Group {
+            if let status = appState.nyoraSyncStatus {
                 if status.isAuthenticated {
+                    settingGroup("Account") {
+                        infoRow("Signed in as", value: status.email.isEmpty ? status.userId : status.email)
+                        buttonRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right", tint: .red) {
+                            Task { await appState.nyoraSyncSignOut() }
+                        }
+                    }
                     settingGroup("Sync") {
                         buttonRow("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                            guard !appState.isSupabaseSyncing else { return }
-                            Task { await appState.supabaseSync() }
+                            guard !appState.isNyoraSyncing else { return }
+                            Task { await appState.nyoraSync() }
                         }
-                        .opacity(appState.isSupabaseSyncing ? 0.5 : 1.0)
+                        .disabled(appState.isNyoraSyncing)
 
                         infoRow("Last synced", value: status.lastSyncTimestamp)
+                    }
+                } else {
+                    settingGroup("Account",
+                                 footer: "Sign in to sync your library across devices.") {
+                        infoRow("Status", value: "Not signed in")
+                        textFieldRow("Email", text: $nyoraSyncEmail, placeholder: "you@example.com")
+                        secureFieldRow("Password", text: $nyoraSyncPassword, placeholder: "••••••••")
+
+                        buttonRow("Sign in", systemImage: "person.crop.circle.badge.plus") {
+                            submitNyoraSyncAuth(register: false)
+                        }
+                        .disabled(appState.isNyoraSyncSigningIn)
+
+                        buttonRow("Create account", systemImage: "person.badge.plus") {
+                            submitNyoraSyncAuth(register: true)
+                        }
+                        .disabled(appState.isNyoraSyncSigningIn)
                     }
                 }
             } else {
                 ProgressView()
                     .padding()
                     .task {
-                        await appState.refreshSupabaseStatus()
+                        await appState.refreshNyoraSyncStatus()
                     }
             }
         }
     }
 
-    private func submitSupabaseAuth(register: Bool) {
-        guard !appState.isSupabaseSigningIn else { return }
-        let em = supabaseEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !em.isEmpty, !supabasePassword.isEmpty else {
+    private func submitNyoraSyncAuth(register: Bool) {
+        guard !appState.isNyoraSyncSigningIn else { return }
+        let em = nyoraSyncEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !em.isEmpty, !nyoraSyncPassword.isEmpty else {
             appState.statusMessage = "Enter your email and password"
             return
         }
         Task { @MainActor in
             _ = register
-                ? await appState.supabaseRegister(email: em, password: supabasePassword)
-                : await appState.supabaseSignIn(email: em, password: supabasePassword)
-            supabasePassword = ""
+                ? await appState.nyoraSyncRegister(email: em, password: nyoraSyncPassword)
+                : await appState.nyoraSyncSignIn(email: em, password: nyoraSyncPassword)
+            nyoraSyncPassword = ""
         }
     }
 
+    @ViewBuilder
     private var backupSection: some View {
-        VStack(spacing: 12) {
-            settingGroup("Manual backup") {
+        Group {
+            settingGroup("Manual backup",
+                         footer: "Saves favourites, history, categories, and bookmarks to a single JSON file. Downloaded images are not included.") {
                 buttonRow("Export library…", systemImage: "square.and.arrow.up") {
                     Task { @MainActor in await exportBackup() }
                 }
                 buttonRow("Import library…", systemImage: "square.and.arrow.down") {
                     Task { @MainActor in await importBackup() }
                 }
-                Text("Saves favourites, history, categories, and bookmarks to a single JSON file. Downloaded images are not included.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.bottom, 10)
             }
-            settingGroup("Periodic backup") {
+            settingGroup("Periodic backup",
+                         footer: "Periodic backups will land in a follow-up release.") {
                 infoRow("Status", value: "Manual only")
-                Text("Periodic backups will land in a follow-up release.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.bottom, 10)
             }
         }
     }
 
+    @ViewBuilder
     private var notificationsSection: some View {
-        VStack(spacing: 12) {
-            settingGroup("Banners") {
-                Text("System banners are managed in macOS System Settings → Notifications → Nyora. The toggles here control which events Nyora emits.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.top, 10)
-            }
-            settingGroup("Events") {
+        Group {
+            settingGroup("Events",
+                         footer: "System banners are managed in macOS System Settings → Notifications → Nyora. The toggles here control which events Nyora emits.") {
                 toggleRow("New chapter notifications", description: "Banner when an updated manga has new chapters.", isOn: $appState.readerPrefs.isTrackerEnabled)
             }
         }
     }
 
+    @ViewBuilder
     private var privacySection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Browsing") {
                 toggleRow("Incognito mode", description: "Don't record chapters in history while it's on.", isOn: $appState.readerPrefs.isIncognitoModeEnabled)
                 toggleRow("Confirm before quitting", description: "Show a Cmd+Q confirmation prompt.", isOn: $appState.readerPrefs.exitConfirm)
@@ -2973,8 +2596,9 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var advancedSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("Database") {
                 infoRow("Path", value: dbPath.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                 infoRow("Size", value: ByteCountFormatter.string(fromByteCount: Int64(dbSizeBytes), countStyle: .file))
@@ -2992,29 +2616,28 @@ struct SettingsView: View {
                 }
             }
             settingGroup("Background service") {
-                HStack {
-                    Text("State"); Spacer()
-                    Text(appState.helperStatus.label).foregroundStyle(appState.helperStatus.color)
+                // The status colour is data (green/red health), so it stays.
+                LabeledContent("State") {
+                    Text(appState.helperStatus.label)
+                        .foregroundStyle(appState.helperStatus.color)
                 }
-                .padding(14)
                 infoRow("Endpoint", value: appState.helperBaseUrl.isEmpty ? "—" : appState.helperBaseUrl)
                 buttonRow("Restart service", systemImage: "arrow.triangle.2.circlepath") {
                     Task { @MainActor in await appState.restartHelper() }
                 }
             }
-            settingGroup("Danger zone") {
+            settingGroup("Danger zone",
+                         footer: "Permanently removes every manga, category, favourite, and history row. Sources are reseeded on next launch.") {
                 buttonRow("Wipe database", systemImage: "trash.fill", tint: .red) {
                     Task { @MainActor in await appState.clearDatabase() }
                 }
-                Text("Permanently removes every manga, category, favourite, and history row. Sources are reseeded on next launch.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.bottom, 10)
             }
         }
     }
 
+    @ViewBuilder
     private var aboutSection: some View {
-        VStack(spacing: 12) {
+        Group {
             settingGroup("App") {
                 infoRow("Version", value: "1.0")
                 infoRow("Build", value: "Nyora for macOS")
@@ -3023,50 +2646,34 @@ struct SettingsView: View {
             settingGroup("Engine") {
                 infoRow("OCR", value: "Apple Vision")
                 infoRow("MT",  value: "Google Translate")
-                infoRow("Refinement", value: "Apple Intelligence + BYOK LLM")
+                infoRow("Refinement", value: "BYOK LLM (OpenAI / Anthropic)")
             }
             settingGroup("Links") {
-                HStack {
-                    Link("Official website", destination: URL(string: "https://nyora.pages.dev")!)
-                    Spacer()
-                    Text("nyora.pages.dev").font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Official website") {
+                    Link("nyora.pages.dev", destination: URL(string: "https://nyora.pages.dev")!)
                 }
-                .font(.system(size: 13))
-                .padding(14)
-                HStack {
-                    Link("Source code", destination: URL(string: "https://github.com/Hasan72341/nyora-mac")!)
-                    Spacer()
-                    Text("Hasan72341/nyora-mac").font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Source code") {
+                    Link("Hasan72341/nyora-mac", destination: URL(string: "https://github.com/Hasan72341/nyora-mac")!)
                 }
-                .font(.system(size: 13))
-                .padding(14)
             }
+            // Attribution is a real row, not a footer — a Section whose only
+            // content is a footer is not guaranteed to draw.
             settingGroup("Credits") {
                 Text("Built on top of the open-source nyora-parsers library for source connectivity. Reader UX inspired by Nyora Android.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(14)
-            }
-            settingGroup("Developer") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Md Hasan Raza").font(.system(size: 13, weight: .semibold))
-                    Text("Creator of Nyora").font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 18) {
-                        Link("Instagram", destination: URL(string: "https://www.instagram.com/md_hasan_raza____?igsh=MXZ6eTk2Y3FsNGs3aQ==")!)
-                        Link("LinkedIn", destination: URL(string: "https://www.linkedin.com/in/md-hasan-raza-8817372a7/")!)
-                        Link("GitHub", destination: URL(string: "https://github.com/Hasan72341")!)
-                        Link("Email", destination: URL(string: "mailto:hasanraza96@outlook.com")!)
-                    }
                     .font(.caption)
-                    .padding(.top, 2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text("Nyora — your manga library, everywhere. Available on Android, Windows, macOS, Linux, iOS and the web.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
+            settingGroup("Developer",
+                         footer: "Nyora — your manga library, everywhere. Available on Android, Windows, macOS, Linux, iOS and the web.") {
+                LabeledContent("Md Hasan Raza") {
+                    Text("Creator of Nyora")
+                }
+                Link("Instagram", destination: URL(string: "https://www.instagram.com/md_hasan_raza____?igsh=MXZ6eTk2Y3FsNGs3aQ==")!)
+                Link("LinkedIn", destination: URL(string: "https://www.linkedin.com/in/md-hasan-raza-8817372a7/")!)
+                Link("GitHub", destination: URL(string: "https://github.com/Hasan72341")!)
+                Link("Email", destination: URL(string: "mailto:hasanraza96@outlook.com")!)
+            }
         }
     }
 
@@ -3103,79 +2710,42 @@ struct SettingsView: View {
 
     // MARK: - Components
 
-    /// A flat settings group: a small uppercase section header above a column
-    /// of rows over a SUBTLE vertical linear-gradient background. No bordered
-    /// card, no shadow — rows are separated by hairline dividers (each row
-    /// helper draws its own trailing separator).
-    private func settingGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased())
-                .font(.caption.bold())
-                .tracking(0.8)
-                .foregroundStyle(Color.appAccent)
-                .padding(.leading, 4)
-
-            VStack(spacing: 0) {
-                content()
+    /// A settings group is a plain `Section`. The uppercase accent-tinted caption,
+    /// the linear-gradient surface and the hand-drawn hairline separators are
+    /// gone — `Form`'s grouped style draws all of that natively. The optional
+    /// footer is where a group's explanatory paragraph belongs on macOS.
+    private func settingGroup<Content: View>(
+        _ title: String,
+        footer: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        Section {
+            content()
+        } header: {
+            Text(title)
+        } footer: {
+            if let footer {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.primary.opacity(0.05), Color.primary.opacity(0.015)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            )
         }
     }
 
-    /// Hairline divider drawn at the bottom of each settings row so adjacent
-    /// rows in a group are separated without any hard bordered box.
-    private var rowSeparator: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.08))
-            .frame(height: 0.5)
-    }
-
+    /// A stock `Toggle`. Two `Text`s in the label is the system title+description
+    /// idiom for a grouped form — no hand-built VStack, no `.labelsHidden()`
+    /// switch stranded behind a `Spacer`.
     private func toggleRow(_ title: String, description: String, isOn: Binding<Bool>) -> some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.body).foregroundStyle(.primary)
-                    Text(description).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: isOn)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .tint(Color.appAccent)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-
-            rowSeparator
+        Toggle(isOn: isOn) {
+            Text(title)
+            Text(description)
         }
+        .tint(Color.appAccent)
     }
 
     private func pickerRow<V: Hashable, Content: View>(_ title: String, selection: Binding<V>, @ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title).foregroundStyle(.primary)
-                Spacer()
-                Picker("", selection: selection) { content() }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .tint(.secondary)
-            }
-            .padding(14)
-
-            rowSeparator
-        }
+        Picker(title, selection: selection) { content() }
     }
 
     private func stepperRow(_ title: String,
@@ -3183,79 +2753,53 @@ struct SettingsView: View {
                             range: ClosedRange<Int>,
                             step: Int,
                             label: String) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title).foregroundStyle(.primary)
-                Spacer()
-                Text(label).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Stepper("", value: value, in: range, step: step)
-                    .labelsHidden()
-                    .controlSize(.small)
+        LabeledContent(title) {
+            Stepper(value: value, in: range, step: step) {
+                Text(label)
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .padding(14)
-
-            rowSeparator
         }
     }
 
     private func textFieldRow(_ title: String,
                               text: Binding<String>,
                               placeholder: String) -> some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.body)
-                TextField(placeholder, text: text)
-                    .textFieldStyle(.roundedBorder)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-
-            rowSeparator
-        }
+        TextField(title, text: text, prompt: Text(placeholder))
     }
 
     private func secureFieldRow(_ title: String,
                                 text: Binding<String>,
                                 placeholder: String) -> some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.body)
-                SecureField(placeholder, text: text)
-                    .textFieldStyle(.roundedBorder)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-
-            rowSeparator
-        }
+        SecureField(title, text: text, prompt: Text(placeholder))
     }
 
+    /// A stock `Button`. The chevron, the hover fill and the hairline are gone;
+    /// a destructive tint becomes the system destructive role.
+    @ViewBuilder
     private func buttonRow(_ title: String,
                             systemImage: String,
                             assetImage: String? = nil,
                             tint: Color = .appAccent,
                             action: @escaping () -> Void) -> some View {
-        SettingsButtonRow(title: title, systemImage: systemImage, assetImage: assetImage, tint: tint, action: action)
+        Button(role: tint == .red ? .destructive : nil, action: action) {
+            Label {
+                Text(title)
+            } icon: {
+                if let assetImage {
+                    Image(bundleResource: assetImage).resizable().frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: systemImage)
+                }
+            }
+        }
     }
 
     private func infoRow(_ title: String, value: String) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(value)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .multilineTextAlignment(.trailing)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-
-            rowSeparator
+        LabeledContent(title) {
+            Text(value)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -3270,70 +2814,23 @@ struct SettingsView: View {
         )
     }
 
+    /// A stock `Slider` in a labelled row, accent kept as a tint.
     private func sliderRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, label: String) -> some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(title)
-                    Spacer()
-                    Text(label).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
+        LabeledContent(title) {
+            HStack(spacing: 8) {
                 Slider(value: value, in: range, step: step)
                     .tint(Color.appAccent)
+                Text(label)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, alignment: .trailing)
             }
-            .padding(14)
-
-            rowSeparator
         }
-    }
-}
-
-@MainActor
-private struct SettingsButtonRow: View {
-    let title: String
-    let systemImage: String
-    var assetImage: String? = nil
-    let tint: Color
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Label {
-                    Text(title)
-                } icon: {
-                    if let assetImage {
-                        Image(bundleResource: assetImage).resizable().frame(width: 16, height: 16)
-                    } else {
-                        Image(systemName: systemImage)
-                    }
-                }
-                .foregroundStyle(tint)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(isHovered ? AnyShapeStyle(Color.appAccent) : AnyShapeStyle(.tertiary))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(isHovered ? 0.05 : 0))
-            .contentShape(Rectangle())
-            .onTapGesture {
-                action()
-            }
-
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 0.5)
-        }
-        .onHover { isHovered = $0 }
     }
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
-    case appearance, library, reader, sources, translation, network, downloads
+    case appearance, library, reader, sources, translation, colorization, network, downloads
     case tracker, sync, backup, notifications, privacy, advanced, about
     var id: String { rawValue }
     var title: String {
@@ -3343,6 +2840,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
         case .reader:        return "Reader"
         case .sources:       return "Sources"
         case .translation:   return "Translation"
+        case .colorization:  return "Colorization"
         case .network:       return "Network"
         case .downloads:     return "Downloads"
         case .tracker:       return "Tracker"
@@ -3362,6 +2860,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
         case .reader:        return "book.pages.fill"
         case .sources:       return "puzzlepiece.extension.fill"
         case .translation:   return "globe"
+        case .colorization:  return "paintbrush.pointed.fill"
         case .network:       return "wifi"
         case .downloads:     return "arrow.down.to.line"
         case .tracker:       return "chart.line.uptrend.xyaxis"
@@ -3376,34 +2875,56 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
 }
 
 @MainActor
+/// The empty state for every pane — one shared treatment so the panes agree with each other.
+/// A large hierarchical SF Symbol in a neutral/secondary tone (the way Finder, Photos and Notes
+/// draw theirs — no saturated accent disc), a title + secondary message, and an optional inline
+/// action button that sits directly under the message so callers don't stack a sibling button
+/// (which the full-height empty view would otherwise push off-screen).
 struct EmptyStateView: View {
     let icon: String
     let title: String
     let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: 20) {
-            // Floating empty-state icon badge — native accent-tinted Liquid
-            // Glass circle in place of the hand-rolled 2-spot accent radial.
+        VStack(spacing: 16) {
             Image(systemName: icon)
-                .font(.system(size: 32, weight: .medium))
+                .font(.system(size: 46, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.appAccent)
-                .frame(width: 80, height: 80)
-                .adaptiveGlass(.circle, tint: Color.appAccent)
-            VStack(spacing: 8) {
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 6) {
                 Text(title)
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.title2.weight(.semibold))
                     .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
                 Text(message)
-                    .font(.subheadline)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 320)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 360)
+
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    // NOT .borderedProminent: a prominent button is the window's DEFAULT
+                    // button and auto-grabs first-responder focus when the pane appears —
+                    // macOS then scrolls to reveal that focused control, which dragged the
+                    // whole sidebar up on the Local pane. A bordered, non-focusable button
+                    // is a clear CTA without hijacking focus/scroll.
+                    .buttonStyle(.bordered)
+                    .tint(.appAccent)
+                    .controlSize(.large)
+                    .focusable(false)
+                    .padding(.top, 4)
             }
         }
+        .padding(40)
+        // Centre within the space the pane gives it, rather than sizing to content and
+        // getting stranded in a corner by the caller's alignment.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(32)
     }
 }
 
@@ -3413,7 +2934,6 @@ struct HistoryRowView: View {
     let accent: Color
     let secondaryAccent: Color
     @EnvironmentObject var appState: AppState
-    @State private var isHovered = false
 
     private var displayChapterTitle: String {
         row.chapterTitle.isEmpty ? "Chapter" : row.chapterTitle
@@ -3457,72 +2977,36 @@ struct HistoryRowView: View {
                         .frame(width: 56)
                 }
 
-                // Metadata
-                VStack(alignment: .leading, spacing: 4) {
+                // Metadata — title, then one secondary line. Chapter, time and source were
+                // three stacked lines, which forced a tall row and left the trailing badge
+                // stranded; the system list idiom is a title plus a single subtitle.
+                VStack(alignment: .leading, spacing: 2) {
                     Text(row.mangaTitle)
-                        .font(.subheadline.bold())
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(displayChapterTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    HStack(spacing: 6) {
-                        Text(displayDate, format: .relative(presentation: .named))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                    HStack(spacing: 4) {
+                        Text(displayChapterTitle)
                         Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        Text(displayDate, format: .relative(presentation: .named))
+                        Text("·")
                         Text(row.sourceName)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 12)
 
                 Text("\(Int((row.percent * 100).rounded()))%")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.primary.opacity(0.18), Color.primary.opacity(0.10)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(
-                        isHovered
-                            ? AnyShapeStyle(LinearGradient(
-                                stops: [
-                                    .init(color: accent.opacity(0.12), location: 0),
-                                    .init(color: accent.opacity(0.05), location: 0.5),
-                                    .init(color: Color.clear, location: 1)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                              ))
-                            : AnyShapeStyle(Color.clear)
-                    )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
         .contextMenu {
             Button {
                 Task {
@@ -3552,59 +3036,64 @@ struct HistoryRowView: View {
 }
 
 @MainActor
-struct SuggestionCard: View {
+/// A suggestion as a stock list row — cover thumbnail, title, one secondary line.
+/// Mirrors `HistoryRowView`: the vignette gradient, white overlay title, drop
+/// shadow, accent glow and hover scale are gone, and `List` supplies hover and
+/// selection itself.
+struct SuggestionRowView: View {
     let manga: HelperSuggestedManga
-    @State private var isHovered = false
+    let action: () -> Void
 
-    private var accentColor: Color {
-        Color.appAccent
+    /// The blurb is real data the card never showed; the source id stands in
+    /// when a suggestion carries no description.
+    private var subtitle: String {
+        let blurb = manga.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return blurb.isEmpty ? manga.sourceId : blurb
     }
 
     var body: some View {
-        // Cover with title overlaid at bottom
-        ZStack(alignment: .bottom) {
-            AsyncImage(url: URL(string: manga.coverUrl)) { phase in
-                if case let .success(image) = phase {
-                    image.resizable().scaledToFill()
-                } else {
-                    CoverPlaceholder(title: manga.title, accent: accentColor)
+        Button(action: action) {
+            HStack(spacing: 14) {
+                AsyncImage(url: URL(string: manga.coverUrl)) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image.resizable().scaledToFill()
+                    case .empty, .failure:
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.06))
+                            .shimmer()
+                    @unknown default:
+                        Color.primary.opacity(0.12)
+                    }
                 }
+                .frame(width: 56, height: 80)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(manga.title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 12)
             }
-            .aspectRatio(2/3, contentMode: .fill)
-            .frame(maxWidth: .infinity)
-
-            // Bottom vignette + title overlay
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .clear, location: 0.45),
-                    .init(color: .black.opacity(0.50), location: 0.72),
-                    .init(color: .black.opacity(0.85), location: 1)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            Text(manga.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(isHovered ? 0.12 : 0.06), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.22), radius: 10, y: 5)
-        .shadow(color: isHovered ? accentColor.opacity(0.30) : .clear, radius: 16, y: 6)
-        .scaleEffect(isHovered ? 1.04 : 1.0)
-        .animation(.spring(response: 0.38, dampingFraction: 0.65), value: isHovered)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovered = hovering
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: action) {
+                Label("View Info", systemImage: "info.circle")
+            }
         }
     }
 }

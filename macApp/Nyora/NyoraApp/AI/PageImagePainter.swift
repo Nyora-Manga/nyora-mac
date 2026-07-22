@@ -14,9 +14,21 @@ import AppKit
 /// not inside a balloon) is skipped — those cause the worst visual artifacts.
 enum PageImagePainter {
 
+    /// One bubble to repaint. `bg*` are the sampled balloon-fill colour (0…1,
+    /// sRGB) — carried as plain Doubles so the value is Sendable across the
+    /// off-main paint task. Mirrors the web overlay's per-block `bg`.
+    struct Bubble: Sendable {
+        let rect: CGRect
+        let text: String
+        let bgR: Double
+        let bgG: Double
+        let bgB: Double
+        var nsColor: NSColor { NSColor(srgbRed: bgR, green: bgG, blue: bgB, alpha: 1) }
+    }
+
     static func paint(
         cgImage: CGImage,
-        bubbles: [(rect: CGRect, text: String)],
+        bubbles: [Bubble],
         originalSize: CGSize,
         textScale: CGFloat = 1.0
     ) -> CGImage? {
@@ -38,35 +50,22 @@ enum PageImagePainter {
         ctx.translateBy(x: 0, y: canvasH)
         ctx.scaleBy(x: 1, y: -1)
 
-        // Pixel access for ray-casting bubble bounds. If we can't read pixels
-        // (rare — non-standard formats), fall back to painting the raw rects.
-        let reader = PixelReader(cgImage: cgImage)
-
-        // Resolve each text rect to its actual speech-bubble bounds. When
-        // ray-cast doesn't return a confident outline (small marginal bubbles,
-        // text in tight panels) fall back to a moderately-padded rect — the
-        // user explicitly preferred "noisy paint" over "silently dropped".
-        var resolved: [(bubble: CGRect, text: String)] = []
-        for (rect, text) in bubbles {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Follow the web overlay: paint at the OCR-detected bubble box directly.
+        // The shared YOLO bubble detector already returns whole-balloon boxes
+        // (refined + padded upstream, same as the web), so ray-casting an outline
+        // here only risks escaping into the panel art. Just clamp to the canvas.
+        var resolved: [(bubble: CGRect, text: String, bg: NSColor)] = []
+        for b in bubbles {
+            let trimmed = b.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let bubbleRect: CGRect
-            if let reader, let found = findBubbleBounds(reader: reader, around: rect) {
-                bubbleRect = found
-            } else {
-                // Pad relative to the text rect — 20% on each side, with a
-                // small absolute floor for tiny text. Clamped to the canvas.
-                let padX = max(8, rect.width * 0.2)
-                let padY = max(6, rect.height * 0.2)
-                let padded = rect.insetBy(dx: -padX, dy: -padY)
-                bubbleRect = CGRect(
-                    x: max(2, padded.minX),
-                    y: max(2, padded.minY),
-                    width: min(canvasW - 4 - max(2, padded.minX), padded.width),
-                    height: min(canvasH - 4 - max(2, padded.minY), padded.height)
-                )
-            }
-            resolved.append((bubbleRect, trimmed))
+            let r = b.rect
+            let x = max(2, r.minX), y = max(2, r.minY)
+            let bubbleRect = CGRect(
+                x: x, y: y,
+                width: min(canvasW - 4 - x, r.width),
+                height: min(canvasH - 4 - y, r.height)
+            )
+            resolved.append((bubbleRect, trimmed, b.nsColor))
         }
 
         // Merge overlapping bubbles (two text rects inside the same balloon
@@ -74,8 +73,8 @@ enum PageImagePainter {
         let merged = mergeOverlapping(resolved)
 
         let responseScale = textScale.clamped(to: 0.75...1.6)
-        for (bubble, text) in merged {
-            paintBubble(in: ctx, bubble: bubble, text: text, canvas: CGSize(width: canvasW, height: canvasH), textScale: responseScale)
+        for (bubble, text, bg) in merged {
+            paintBubble(in: ctx, bubble: bubble, text: text, bg: bg, canvas: CGSize(width: canvasW, height: canvasH), textScale: responseScale)
         }
 
         return ctx.makeImage()
@@ -83,7 +82,7 @@ enum PageImagePainter {
 
     // MARK: - Overlap merging
 
-    private static func mergeOverlapping(_ items: [(bubble: CGRect, text: String)]) -> [(bubble: CGRect, text: String)] {
+    private static func mergeOverlapping(_ items: [(bubble: CGRect, text: String, bg: NSColor)]) -> [(bubble: CGRect, text: String, bg: NSColor)] {
         // Merge resolved bubble rects that overlap.
         // Two cases both require merging:
         //   a) Ray-casting gives the same balloon outline for two text rects
@@ -96,11 +95,12 @@ enum PageImagePainter {
         // so they're never merged.
         guard !items.isEmpty else { return [] }
         var used = Set<Int>()
-        var out: [(bubble: CGRect, text: String)] = []
+        var out: [(bubble: CGRect, text: String, bg: NSColor)] = []
         for i in items.indices {
             if used.contains(i) { continue }
             var rect = items[i].bubble
             var texts = [items[i].text]
+            let bg = items[i].bg
             used.insert(i)
             var grew = true
             while grew {
@@ -123,7 +123,7 @@ enum PageImagePainter {
                     }
                 }
             }
-            out.append((rect, texts.joined(separator: " ")))
+            out.append((rect, texts.joined(separator: " "), bg))
         }
         return out
     }
@@ -261,23 +261,27 @@ enum PageImagePainter {
         in ctx: CGContext,
         bubble: CGRect,
         text: String,
+        bg: NSColor,
         canvas: CGSize,
         textScale: CGFloat
     ) {
         // Grow if too small for readable text (single-char bubbles, etc.)
         let bgRect = fitForText(text: text, around: bubble, canvas: canvas, textScale: textScale)
 
-        let radius = min(12, bgRect.height * 0.22)
+        let radius = min(14, bgRect.height * 0.28)
         let bgPath = CGPath(roundedRect: bgRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let fill = bg.usingColorSpace(.sRGB) ?? NSColor.white
 
         ctx.saveGState()
-        ctx.setFillColor(NSColor.white.cgColor)
+        // Repaint the balloon interior in its own SAMPLED colour with a soft
+        // feathered edge (the web overlay's `box-shadow: 0 0 6px 4px bg`), rather
+        // than a hard white box + black outline — so the fill blends into the
+        // original bubble border and the surrounding page instead of stamping a
+        // visible rectangle over the art.
+        ctx.setShadow(offset: .zero, blur: max(3, bgRect.height * 0.05), color: fill.cgColor)
+        ctx.setFillColor(fill.cgColor)
         ctx.addPath(bgPath)
         ctx.fillPath()
-        ctx.setStrokeColor(NSColor.black.cgColor)
-        ctx.setLineWidth(max(1.2, bgRect.height * 0.015))
-        ctx.addPath(bgPath)
-        ctx.strokePath()
         ctx.restoreGState()
 
         ctx.saveGState()
@@ -290,8 +294,16 @@ enum PageImagePainter {
             width: bgRect.width - inset * 2,
             height: bgRect.height - inset * 2
         )
-        drawCenteredText(text, in: drawRect, ctx: ctx, textScale: textScale)
+        drawCenteredText(text, in: drawRect, ctx: ctx, color: textColor(forFill: fill), textScale: textScale)
         ctx.restoreGState()
+    }
+
+    /// Legible text colour for a fill (web's `textColorFor`): white on a dark
+    /// balloon, near-black on a light one.
+    private static func textColor(forFill fill: NSColor) -> NSColor {
+        let c = fill.usingColorSpace(.sRGB) ?? fill
+        let lum = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+        return lum < 0.5 ? .white : NSColor(white: 0.07, alpha: 1)
     }
 
     private static func fitForText(text: String, around rect: CGRect, canvas: CGSize, textScale: CGFloat) -> CGRect {
@@ -370,43 +382,73 @@ enum PageImagePainter {
         return c
     }
 
-    private static func drawCenteredText(_ text: String, in rect: CGRect, ctx: CGContext, textScale: CGFloat) {
+    private static func drawCenteredText(_ text: String, in rect: CGRect, ctx: CGContext, color: NSColor, textScale: CGFloat) {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         style.lineBreakMode = .byWordWrapping
         style.lineSpacing = 1
         style.hyphenationFactor = 0 // Disable hyphenation to prevent word splitting
 
-        let words = text.components(separatedBy: .whitespacesAndNewlines)
+        let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         let preferredFont: CGFloat = max(10 * textScale, min(rect.height * 0.35 * textScale, 18 * textScale))
         var fontSize = preferredFont
-        let minFont: CGFloat = 8
+        // 6pt floor, matching nyora-web's fitter — one step lower than before so more whole
+        // words survive intact before we ever consider breaking one.
+        let minFont: CGFloat = 6
         var attr = NSAttributedString()
         var bounds: CGRect = .zero
-        
+        var longestWordFits = true
+
         while fontSize >= minFont {
             let font = NSFont(name: "Comic Sans MS Bold", size: fontSize) ?? NSFont.systemFont(ofSize: fontSize, weight: .bold)
-            
-            // PEAK FIX: Check if the longest word fits the bubble width.
-            // If it doesn't, we MUST shrink the font further, otherwise it "lips" to a new line mid-word.
-            let longestWordWidth = words.map { 
-                NSAttributedString(string: $0, attributes: [.font: font]).size().width 
+
+            // Whole words are unbreakable (byWordWrapping + no hyphenation), so the ONLY way to
+            // fit a too-wide word is to shrink the font. Check the longest word explicitly:
+            // boundingRect alone would happily report "fits" while a word overflows its line.
+            // The unbreakable unit is a whole Latin word but a single CJK character (CJK wraps
+            // between characters), so CJK targets don't over-shrink.
+            func unitWidth(_ s: String) -> CGFloat {
+                NSAttributedString(string: s, attributes: [.font: font]).size().width
+            }
+            let longestWordWidth = words.map { word -> CGFloat in
+                word.unicodeScalars.contains(where: TextFit.isCJK)
+                    ? (word.map { unitWidth(String($0)) }.max() ?? 0)
+                    : unitWidth(word)
             }.max() ?? 0
-            
+
             attr = NSAttributedString(string: text, attributes: [
                 .font: font,
-                .foregroundColor: NSColor.black,
+                .foregroundColor: color,
                 .paragraphStyle: style
             ])
             bounds = attr.boundingRect(
                 with: CGSize(width: rect.width, height: .greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading]
             )
-            
-            if bounds.height <= rect.height && longestWordWidth <= rect.width * 0.95 { 
-                break 
+
+            longestWordFits = longestWordWidth <= rect.width * 0.95
+            if bounds.height <= rect.height && longestWordFits {
+                break
             }
             fontSize -= 0.5
+        }
+
+        // Last resort: a single token (e.g. a long URL) that can't fit whole even at the 6pt
+        // floor. Break WITHIN the word rather than let the CTFrame clip it — mirrors the web,
+        // which prefers breaking a URL over silently swallowing the text. Whole-word shrink is
+        // always attempted first above; this only engages when that genuinely can't succeed.
+        if !longestWordFits {
+            let floorSize = max(minFont, fontSize)
+            style.lineBreakMode = .byCharWrapping
+            attr = NSAttributedString(string: text, attributes: [
+                .font: NSFont(name: "Comic Sans MS Bold", size: floorSize) ?? NSFont.systemFont(ofSize: floorSize, weight: .bold),
+                .foregroundColor: color,
+                .paragraphStyle: style
+            ])
+            bounds = attr.boundingRect(
+                with: CGSize(width: rect.width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
         }
 
         let h = min(bounds.height, rect.height)

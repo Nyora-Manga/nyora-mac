@@ -5,7 +5,7 @@ struct SyncPushResult: Sendable {
     let history: Bool
 }
 
-struct SupabaseStatusResponse: Decodable, Sendable {
+struct NyoraSyncStatusResponse: Decodable, Sendable {
     let isConfigured: Bool
     let isAuthenticated: Bool
     let userId: String
@@ -54,7 +54,7 @@ struct SupabaseStatusResponse: Decodable, Sendable {
     }
 }
 
-struct SupabaseOkResponse: Decodable, Sendable {
+struct NyoraSyncOkResponse: Decodable, Sendable {
     let ok: Bool
 }
 
@@ -136,6 +136,24 @@ actor NyoraHelperBridge {
     func togglePin(sourceId: String) async throws -> [SourceSummary] {
         let response: HelperSourcesResponse = try await post("/sources/pin?id=\(sourceId.urlEscaped)")
         return response.sources.map(SourceSummary.init)
+    }
+
+    /// Bulk-replace the engine's installed set with exactly `ids` (POST /sources/setInstalled).
+    /// Mirrors the app's client-side curated set into the engine DB so NyoraSync source-prefs sync
+    /// pushes the user's real installed set. One call, no per-source install storm.
+    @discardableResult
+    func setInstalledSources(ids: [String]) async throws -> [SourceSummary] {
+        guard let base = baseUrl else { throw HelperError(error: "Helper not connected") }
+        var req = URLRequest(url: base.appendingPathComponent("sources/setInstalled"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ids)
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
+            throw HelperError(error: "setInstalled failed")
+        }
+        let decoded = try JSONDecoder().decode(HelperSourcesResponse.self, from: data)
+        return decoded.sources.map(SourceSummary.init)
     }
 
     func catalog() async throws -> [HelperCatalogEntry] {
@@ -529,37 +547,37 @@ actor NyoraHelperBridge {
         return response.entries.map { MangaSummary($0, sourceName: sourceId) }
     }
 
-    // MARK: Supabase
+    // MARK: NyoraSync
 
-    func supabaseStatus() async throws -> SupabaseStatusResponse {
-        try await get("/supabase/status")
+    func nyoraSyncStatus() async throws -> NyoraSyncStatusResponse {
+        try await get("/nyorasync/status")
     }
 
-    func supabaseSignIn(email: String, password: String) async throws -> Bool {
-        let response: SupabaseOkResponse = try await post("/supabase/signin?email=\(email.urlEscaped)&password=\(password.urlEscaped)")
+    func nyoraSyncSignIn(email: String, password: String) async throws -> Bool {
+        let response: NyoraSyncOkResponse = try await post("/nyorasync/signin?email=\(email.urlEscaped)&password=\(password.urlEscaped)")
         return response.ok
     }
 
-    func supabaseRegister(email: String, password: String) async throws -> Bool {
-        let response: SupabaseOkResponse = try await post("/supabase/register?email=\(email.urlEscaped)&password=\(password.urlEscaped)")
+    func nyoraSyncRegister(email: String, password: String) async throws -> Bool {
+        let response: NyoraSyncOkResponse = try await post("/nyorasync/register?email=\(email.urlEscaped)&password=\(password.urlEscaped)")
         return response.ok
     }
 
-    func supabaseSignOut() async throws {
-        let _: SupabaseOkResponse = try await post("/supabase/signout")
+    func nyoraSyncSignOut() async throws {
+        let _: NyoraSyncOkResponse = try await post("/nyorasync/signout")
     }
 
-    func supabaseSync() async throws {
-        let _: SupabaseOkResponse = try await post("/supabase/sync")
+    func nyoraSync() async throws {
+        let _: NyoraSyncOkResponse = try await post("/nyorasync/sync")
     }
 
-    func supabaseRestoreFromCloud() async throws {
-        let _: SupabaseOkResponse = try await post("/supabase/restore-from-cloud")
+    func nyoraSyncRestoreFromCloud() async throws {
+        let _: NyoraSyncOkResponse = try await post("/nyorasync/restore-from-cloud")
     }
 
-    func supabaseHasLocalData() async throws -> Bool {
+    func nyoraSyncHasLocalData() async throws -> Bool {
         struct Response: Decodable { let hasLocalData: Bool }
-        let resp: Response = try await get("/supabase/has-local-data")
+        let resp: Response = try await get("/nyorasync/has-local-data")
         return resp.hasLocalData
     }
 
@@ -571,19 +589,57 @@ actor NyoraHelperBridge {
     /// few broad/filtered searches in parallel and rank them client-side. Every
     /// call passes `content_rating=safe`, so NSFW titles never reach the feed
     /// regardless of `hideAdult`.
+    /// Discover feed — AniList is PRIMARY (matches nyora-web), MangaBaka is the
+    /// fallback used only when AniList is unreachable / rate-limited / empty.
     func anilistBrowse(hideAdult: Bool) async throws -> AniListBrowseData {
+        if let feed = try? await anilistFeedNative(hideAdult: hideAdult) {
+            return feed
+        }
+        return try await mangaBakaBrowse(hideAdult: hideAdult)
+    }
+
+    /// AniList public GraphQL discover feed (no auth). Aliased Page queries per
+    /// rail — same shape as nyora-web's discover.js.
+    private func anilistFeedNative(hideAdult: Bool) async throws -> AniListBrowseData {
+        let fields = "id title { romaji english native } coverImage { large } bannerImage genres averageScore countryOfOrigin isAdult"
+        func page(_ alias: String, _ filter: String, _ sort: String) -> String {
+            "\(alias): Page(perPage: 30) { media(type: MANGA, isAdult: false, \(filter)sort: \(sort)) { \(fields) } }"
+        }
+        let query = """
+        query {
+          \(page("trending", "", "TRENDING_DESC"))
+          \(page("manhwa", "countryOfOrigin: KR, ", "POPULARITY_DESC"))
+          \(page("manhua", "countryOfOrigin: CN, ", "POPULARITY_DESC"))
+          \(page("manga", "countryOfOrigin: JP, ", "POPULARITY_DESC"))
+          \(page("topRated", "", "SCORE_DESC"))
+        }
+        """
+        var req = URLRequest(url: URL(string: "https://graphql.anilist.co")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["query": query])
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
+            throw HelperError(error: "AniList HTTP error")
+        }
+        let feed = try JSONDecoder().decode(AniListBrowseResponse.self, from: data).data
+        guard let feed, feed.trending?.media.isEmpty == false else {
+            throw HelperError(error: "AniList returned nothing")
+        }
+        return feed
+    }
+
+    /// MangaBaka fallback feed (search-first, ranked client-side).
+    private func mangaBakaBrowse(hideAdult: Bool) async throws -> AniListBrowseData {
         async let mangaPopular = mangaBakaRail(type: "manga", sortByRating: false)
         async let manhwaPopular = mangaBakaRail(type: "manhwa", sortByRating: false)
         async let mangaTopRated = mangaBakaRail(type: "manga", sortByRating: true)
-
-        // A single rail failing (network/rate) resolves to [] so the rest of the
-        // feed still renders.
         let trending = (try? await mangaPopular) ?? []
         let popular = (try? await manhwaPopular) ?? []
         let topRated = (try? await mangaTopRated) ?? []
-
         if trending.isEmpty && popular.isEmpty && topRated.isEmpty {
-            throw HelperError(error: "MangaBaka feed unavailable")
+            throw HelperError(error: "Feed unavailable")
         }
         return AniListBrowseData(
             trending: AniListBrowsePage(media: trending),
@@ -621,27 +677,36 @@ actor NyoraHelperBridge {
         return sorted.prefix(24).map { $0.toBrowseMedia() }
     }
 
-    // MARK: Tracker (AniList)
+    // MARK: Tracker (generic — all services)
 
-    func anilistSearch(title: String, token: String) async throws -> [AniListMedia] {
+    /// Search a tracker service (`slug` = the service's `endpointSlug`). The
+    /// helper normalizes every service's response to `[TrackerHit]`.
+    func trackerSearch(slug: String, title: String, token: String) async throws -> [TrackerHit] {
         guard let base = baseUrl else { throw HelperError(error: "Helper not connected") }
-        var comps = URLComponents(url: base.appendingPathComponent("tracker/anilist/search"),
+        var comps = URLComponents(url: base.appendingPathComponent("tracker/\(slug)/search"),
                                   resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "title", value: title)]
         var req = URLRequest(url: comps?.url ?? base)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
-            throw HelperError(error: "AniList search failed")
+            throw HelperError(error: "\(slug) search failed")
         }
-        let decoded = try JSONDecoder().decode(AniListSearchResponse.self, from: data)
-        return decoded.data?.Page?.media ?? []
+        return try JSONDecoder().decode(TrackerSearchResponse.self, from: data).results
     }
 
+    /// Create-or-update the user's progress on a tracker service. The helper
+    /// resolves any per-service user-id / rate-id internally.
     @discardableResult
-    func anilistScrobble(mediaId: Int, progress: Int, status: String, token: String) async throws -> Bool {
+    func trackerScrobble(
+        slug: String,
+        mediaId: Int,
+        progress: Int,
+        status: String = "reading",
+        token: String
+    ) async throws -> Bool {
         guard let base = baseUrl else { throw HelperError(error: "Helper not connected") }
-        var comps = URLComponents(url: base.appendingPathComponent("tracker/anilist/scrobble"),
+        var comps = URLComponents(url: base.appendingPathComponent("tracker/\(slug)/scrobble"),
                                   resolvingAgainstBaseURL: false)
         comps?.queryItems = [
             URLQueryItem(name: "mediaId", value: String(mediaId)),
@@ -655,6 +720,29 @@ actor NyoraHelperBridge {
         let (_, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else { return false }
         return http.statusCode < 400
+    }
+
+    /// Password-grant sign-in (Kitsu) routed through the local helper. Kitsu's OAuth
+    /// token endpoint is Cloudflare-challenged even from a residential IP, which a
+    /// direct client-side POST can't clear — going through the helper lets its
+    /// CloudflareInterceptor solve it (native WebView) and replay the request.
+    func trackerPasswordLogin(slug: String, username: String, password: String)
+        async throws -> (accessToken: String, refreshToken: String?) {
+        guard let base = baseUrl else { throw HelperError(error: "Helper not connected") }
+        var req = URLRequest(url: base.appendingPathComponent("tracker/\(slug)/login"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["username": username, "password": password])
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
+            throw HelperError(error: "Sign-in failed — check your email and password.")
+        }
+        struct LoginResponse: Decodable { let access_token: String?; let refresh_token: String? }
+        guard let decoded = try? JSONDecoder().decode(LoginResponse.self, from: data),
+              let token = decoded.access_token, !token.isEmpty else {
+            throw HelperError(error: "Sign-in failed — check your email and password.")
+        }
+        return (token, decoded.refresh_token)
     }
 
     // MARK: Internals
@@ -691,10 +779,16 @@ actor NyoraHelperBridge {
             if let helperErr = try? JSONDecoder().decode(HelperError.self, from: data) {
                 // Cloudflare JS challenge → solve in a WebView, push the clearance to
                 // the helper's cookie jar, and retry the request once.
-                if let host = helperErr.cloudflareHost, !triedCloudflare,
-                   let cookieHeader = await MacCloudflareSolver.shared.solve(host: host) {
-                    await postCloudflareClearance(host: host, cookieHeader: cookieHeader)
-                    return try await call(path: path, method: method, timeout: timeout, triedCloudflare: true)
+                if let host = helperErr.cloudflareHost, !triedCloudflare {
+                    MacCloudflareSolver.diag("bridge: CF challenge detected host=\(host) path=\(path) → calling solve()")
+                    if let cookieHeader = await MacCloudflareSolver.shared.solve(host: host) {
+                        MacCloudflareSolver.diag("bridge: solve() returned clearance, posting + retrying \(path)")
+                        await postCloudflareClearance(host: host, cookieHeader: cookieHeader)
+                        return try await call(path: path, method: method, timeout: timeout, triedCloudflare: true)
+                    }
+                    MacCloudflareSolver.diag("bridge: solve() returned NIL for host=\(host) → surfacing error")
+                } else if triedCloudflare, helperErr.cloudflareHost != nil {
+                    MacCloudflareSolver.diag("bridge: still challenged AFTER solve+retry path=\(path) → clearance rejected")
                 }
                 throw helperErr
             }
@@ -710,6 +804,25 @@ actor NyoraHelperBridge {
             print("[NyoraHelperBridge] Decode failed for \(method) \(path): \(error.localizedDescription). Body: \(rawBody)")
             throw HelperError(error: "Content unavailable for \(method) \(path). Please try again later.")
         }
+    }
+
+    /// The live domain (host) of a source — parser sources carry an empty baseUrl, so the
+    /// app asks the engine (which opens the parser and reads `parser.domain`).
+    func sourceDomain(id: String) async -> String? {
+        struct DomainResponse: Decodable { let domain: String }
+        let resp: DomainResponse? = try? await get("/sources/domain?id=\(id.urlEscaped)")
+        let domain = resp?.domain ?? ""
+        return domain.isEmpty ? nil : domain
+    }
+
+    /// Manually open the Cloudflare verification window for `host`, then register the solved
+    /// clearance with the engine (enables the WebView relay for the host). Returns true if a
+    /// clearance was obtained. Used by the "Solve Cloudflare" toolbar/toast actions.
+    func solveCloudflareManually(host: String) async -> Bool {
+        guard !host.isEmpty,
+              let cookieHeader = await MacCloudflareSolver.shared.solve(host: host) else { return false }
+        await postCloudflareClearance(host: host, cookieHeader: cookieHeader)
+        return true
     }
 
     /// POST a solved `cf_clearance` cookie header to the helper for `host`.
@@ -776,7 +889,8 @@ extension SourceSummary {
             engine: source.engine,
             isInstalled: source.isInstalled,
             isPinned: source.isPinned,
-            isNsfw: source.isNsfw
+            isNsfw: source.isNsfw,
+            iconUrl: source.iconUrl
         )
     }
 }

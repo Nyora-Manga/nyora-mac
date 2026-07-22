@@ -2,14 +2,17 @@ import Foundation
 import SwiftUI
 import Security
 
-/// The tracking services Nyora can link. Client IDs / secrets mirror the
-/// canonical values in nyora-android `app/src/main/res/values/constants.xml`
-/// so every platform authenticates against the same registered OAuth apps.
+/// The tracking services Nyora can link. Register one Nyora OAuth app per
+/// provider (redirect nyora://<slug>-auth for the app flow +
+/// https://api.nyora.xyz/tracker/<slug>/callback for web) and set the client
+/// id/secret above. Kitsu uses the shared public Kitsu client (password grant).
 enum TrackerService: String, CaseIterable, Identifiable, Sendable {
     case anilist
     case myanimelist
     case kitsu
     case shikimori
+    case bangumi
+    case mangabaka
 
     var id: String { rawValue }
 
@@ -19,6 +22,8 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
         case .myanimelist: return "MyAnimeList"
         case .kitsu:       return "Kitsu"
         case .shikimori:   return "Shikimori"
+        case .bangumi:     return "Bangumi"
+        case .mangabaka:   return "MangaBaka"
         }
     }
 
@@ -30,35 +35,60 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
         case .myanimelist: return "myanimelist"
         case .kitsu:       return "kitsu"
         case .shikimori:   return "shikimori"
+        case .bangumi:     return "bangumi"
+        case .mangabaka:   return "mangabaka"
         }
     }
 
-    /// Real OAuth client IDs (mirror nyora-android constants.xml).
+    /// Nyora OAuth client IDs — register one app per provider (redirect
+    /// nyora://<slug>-auth for mobile + https://api.nyora.xyz/tracker/<slug>/callback
+    /// for web) and paste the client id here. Kitsu uses the shared public client.
     var clientId: String {
         switch self {
-        case .anilist:     return "9887"
-        case .myanimelist: return "66e27ac5d5a1764e944677b42e2c4737"
+        case .anilist:     return "46413"
+        case .myanimelist: return "f3fec032a062ca0ba0c37330ca63730a"
         case .kitsu:       return "dd031b32d2f56c990b1425efe6c42ad847e7fe3ab46bf1299f05ecd856bdb7dd"
-        case .shikimori:   return "Mw6F0tPEOgyV7F9U9Twg50Q8SndMY7hzIOfXg0AX_XU"
+        case .shikimori:   return "YOUR_SHIKIMORI_CLIENT_ID"
+        case .bangumi:     return "YOUR_BANGUMI_CLIENT_ID"
+        case .mangabaka:   return "WFVyyltyYIteXTlesNaCnZwLnkjwGWRp"
         }
     }
 
     /// Client secret where the provider's token exchange requires it.
-    /// AniList uses the implicit grant and MyAnimeList is a PKCE public client,
-    /// so neither needs a secret here.
+    /// AniList (implicit) and the PKCE public clients (MyAnimeList, MangaBaka)
+    /// don't use a secret.
     var clientSecret: String? {
         switch self {
         case .anilist:     return nil
         case .myanimelist: return nil
+        case .mangabaka:   return nil
         case .kitsu:       return "54d7307928f63414defd96399fc31ba847961ceaecef3a5fd93144e960c0e151"
-        case .shikimori:   return "euBMt1GGRSDpVIFQVPxZrO7Kh6X4gWyv0dABuj4B-M8"
+        case .shikimori:   return "YOUR_SHIKIMORI_CLIENT_SECRET"
+        case .bangumi:     return "YOUR_BANGUMI_CLIENT_SECRET"
         }
     }
+
+    /// The OAuth redirect host — `nyora://<host>` — matching each client's
+    /// registered redirect. ASWebAuthenticationSession intercepts the scheme
+    /// in-session, so no app URL-scheme registration is required.
+    var callbackHost: String {
+        switch self {
+        case .anilist:     return "anilist-auth"
+        case .myanimelist: return "myanimelist-auth"
+        case .shikimori:   return "shikimori-auth"
+        case .bangumi:     return "bangumi-auth"
+        case .mangabaka:   return "mangabaka-auth"
+        case .kitsu:       return "" // password grant, no redirect
+        }
+    }
+
+    /// The effective OAuth `redirect_uri` for this service.
+    var redirectURI: String { "nyora://\(callbackHost)" }
 
     enum GrantKind: Sendable {
         /// Token returned directly in the redirect fragment (AniList).
         case implicit
-        /// Authorization-code redirect + token exchange (MyAnimeList, Shikimori).
+        /// Authorization-code redirect + token exchange.
         case authorizationCode
         /// Resource-owner password grant, no browser (Kitsu).
         case password
@@ -66,9 +96,20 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
 
     var grantKind: GrantKind {
         switch self {
-        case .anilist:                 return .implicit
-        case .kitsu:                   return .password
-        case .myanimelist, .shikimori: return .authorizationCode
+        case .anilist: return .implicit
+        case .kitsu:   return .password
+        case .myanimelist, .shikimori, .bangumi, .mangabaka: return .authorizationCode
+        }
+    }
+
+    /// PKCE method for the authorization-code clients that require it.
+    enum PKCEMethod: Sendable { case plain, s256 }
+
+    var pkceMethod: PKCEMethod? {
+        switch self {
+        case .myanimelist: return .plain
+        case .mangabaka:   return .s256
+        default:           return nil
         }
     }
 
@@ -76,7 +117,9 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .anilist:     return URL(string: "https://anilist.co/api/v2/oauth/authorize")
         case .myanimelist: return URL(string: "https://myanimelist.net/v1/oauth2/authorize")
-        case .shikimori:   return URL(string: "https://shikimori.one/oauth/authorize")
+        case .shikimori:   return URL(string: "https://shikimori.io/oauth/authorize")
+        case .bangumi:     return URL(string: "https://bgm.tv/oauth/authorize")
+        case .mangabaka:   return URL(string: "https://mangabaka.org/auth/oauth2/authorize")
         case .kitsu:       return nil
         }
     }
@@ -85,18 +128,29 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .anilist:     return URL(string: "https://anilist.co/api/v2/oauth/token")
         case .myanimelist: return URL(string: "https://myanimelist.net/v1/oauth2/token")
-        case .shikimori:   return URL(string: "https://shikimori.one/oauth/token")
-        case .kitsu:       return URL(string: "https://kitsu.io/api/oauth/token")
+        case .shikimori:   return URL(string: "https://shikimori.io/oauth/token")
+        case .bangumi:     return URL(string: "https://bgm.tv/oauth/access_token")
+        case .mangabaka:   return URL(string: "https://mangabaka.org/auth/oauth2/token")
+        case .kitsu:       return URL(string: "https://kitsu.app/api/oauth/token")
         }
     }
 
     /// Extra OAuth scope a provider needs on the authorize request.
     var authScope: String? {
-        self == .shikimori ? "user_rates" : nil
+        switch self {
+        case .shikimori: return "user_rates"
+        case .mangabaka: return "library.read+library.write+profile+offline_access+openid"
+        default:         return nil
+        }
     }
 
     /// Providers that require a descriptive `User-Agent` header.
-    var requiresUserAgent: Bool { self == .shikimori }
+    var requiresUserAgent: Bool {
+        switch self {
+        case .shikimori, .bangumi: return true
+        default:                   return false
+        }
+    }
 }
 
 /// Multi-service tracker settings backed by Keychain (tokens) + UserDefaults

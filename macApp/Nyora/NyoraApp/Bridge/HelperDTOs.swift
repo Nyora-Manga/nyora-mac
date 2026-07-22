@@ -63,6 +63,29 @@ struct HelperManga: Decodable, Identifiable, Hashable {
     let chapters: [HelperChapter]
     let unread: Int
     let progress: Float
+    /// Which source this manga was saved from (present in library payloads).
+    var source: HelperMangaSourceRef? = nil
+
+    /// The "openable" source id (matches an installed `SourceSummary.id`, e.g.
+    /// "parser:ASURASCANS") this manga belongs to — so a favourite opens in the
+    /// source it was actually saved from, not whatever is selected in Explore.
+    var resolvedSourceId: String? { source?.openableId }
+}
+
+/// The `MangaSourceRef` the engine tags every manga with (Parser/Script/Mihon/Local).
+struct HelperMangaSourceRef: Decodable, Hashable {
+    let type: String
+    let name: String
+    var sourceId: Int64? = nil
+
+    /// Convert to the installed-source id format (`openableHistorySourceId`).
+    var openableId: String? {
+        if type.hasSuffix(".Parser") { return "parser:\(name)" }
+        if type.hasSuffix(".Script") { return "script:\(name)" }
+        if type.hasSuffix(".Mihon") { return sourceId.map { "mihon:\($0)" } }
+        if type.hasSuffix(".Local") { return "local:" }
+        return nil
+    }
 }
 
 struct HelperChapter: Decodable, Identifiable, Hashable {
@@ -133,6 +156,20 @@ struct HelperCatalogEntry: Decodable, Identifiable, Hashable {
         isBroken = (try? c.decode(Bool.self, forKey: .isBroken)) ?? false
         isInstalled = (try? c.decode(Bool.self, forKey: .isInstalled)) ?? false
         isNsfw = (try? c.decode(Bool.self, forKey: .isNsfw)) ?? false
+    }
+
+    /// Memberwise init so a curated `isInstalled` overlay can produce a copy (the type has
+    /// only a custom `Decodable` init otherwise).
+    init(id: String, name: String, lang: String, engine: String, contentType: String,
+         isBroken: Bool, isInstalled: Bool, isNsfw: Bool) {
+        self.id = id; self.name = name; self.lang = lang; self.engine = engine
+        self.contentType = contentType; self.isBroken = isBroken
+        self.isInstalled = isInstalled; self.isNsfw = isNsfw
+    }
+
+    func withInstalled(_ flag: Bool) -> HelperCatalogEntry {
+        HelperCatalogEntry(id: id, name: name, lang: lang, engine: engine, contentType: contentType,
+                           isBroken: isBroken, isInstalled: flag, isNsfw: isNsfw)
     }
 }
 
@@ -352,19 +389,19 @@ struct HelperSourceFilter: Decodable, Identifiable, Hashable {
     var id: String { name }
 }
 
-// MARK: - Tracker (AniList)
+// MARK: - Tracker (normalized — all services)
 
-struct AniListSearchResponse: Decodable {
-    let data: AniListSearchData?
-}
-struct AniListSearchData: Decodable { let Page: AniListSearchPage? }
-struct AniListSearchPage: Decodable { let media: [AniListMedia] }
-struct AniListMedia: Decodable, Identifiable, Hashable {
+/// The helper returns the same shape for every tracker service
+/// (AniList / MyAnimeList / Kitsu / Shikimori / Bangumi / MangaBaka), so the
+/// Swift client parses one type regardless of which service was queried.
+struct TrackerSearchResponse: Decodable { let results: [TrackerHit] }
+
+struct TrackerHit: Decodable, Identifiable, Hashable {
     let id: Int
-    let title: AniListTitle
-    let coverImage: AniListCover?
-    let chapters: Int?
-    var bestTitle: String { title.romaji ?? title.english ?? title.native ?? "Untitled" }
+    let title: String
+    let altTitle: String?
+    let cover: String?
+    let url: String
 }
 struct AniListTitle: Decodable, Hashable {
     let romaji: String?
@@ -380,9 +417,12 @@ struct AniListBrowseResponse: Decodable {
 }
 
 struct AniListBrowseData: Decodable {
-    let trending: AniListBrowsePage?
-    let popular: AniListBrowsePage?
-    let topRated: AniListBrowsePage?
+    var trending: AniListBrowsePage? = nil
+    var manhwa: AniListBrowsePage? = nil   // AniList countryOfOrigin: KR
+    var manhua: AniListBrowsePage? = nil   // AniList countryOfOrigin: CN
+    var manga: AniListBrowsePage? = nil    // AniList countryOfOrigin: JP
+    var popular: AniListBrowsePage? = nil  // (MangaBaka fallback rail)
+    var topRated: AniListBrowsePage? = nil
 }
 
 struct AniListBrowsePage: Decodable {
@@ -393,12 +433,15 @@ struct AniListBrowseMedia: Decodable, Identifiable, Hashable {
     let id: Int
     let title: AniListTitle
     let coverImage: AniListCover?
+    var bannerImage: String? = nil
     let isAdult: Bool?
     let genres: [String]?
     let averageScore: Int?
 
     var bestTitle: String { title.english ?? title.romaji ?? title.native ?? "Untitled" }
     var coverURL: String { coverImage?.large ?? "" }
+    /// Wide backdrop for the hero (falls back to the cover when no banner).
+    var backdropURL: String { bannerImage ?? coverImage?.large ?? "" }
     var topGenre: String? { genres?.first }
 }
 

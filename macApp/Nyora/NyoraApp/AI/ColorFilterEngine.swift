@@ -4,6 +4,9 @@ import CoreImage
 enum ColorFilterEngine {
     /// Caches the processed images to make reader navigation and scrubbing perfectly smooth.
     nonisolated(unsafe) private static let cache = NSCache<NSString, NSImage>()
+    /// Shared GPU context so the color-adjust graph rasterizes off the main
+    /// thread (inside `apply`'s detached task) instead of lazily at draw time.
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
     
     static func cachedResult(for image: NSImage, adjustments: ColorAdjustments, cacheKey: String?) -> NSImage? {
         guard !adjustments.isNeutral else { return image }
@@ -105,10 +108,22 @@ enum ColorFilterEngine {
             }
         }
         
-        // 3. Render back to NSImage
-        let rep = NSCIImageRep(ciImage: outputImage)
-        let newNSImage = NSImage(size: rep.size)
-        newNSImage.addRepresentation(rep)
+        // 3. Render back to NSImage — FORCE evaluation here, on this detached
+        // task. NSCIImageRep is lazy: it defers the full-res CIColorControls→
+        // CIColorCube(32³)→CIHueAdjust graph to first draw, which lands on the
+        // MAIN thread inside AdjustedImageView.body (and the un-rendered rep is
+        // what gets cached, so every cache HIT re-evaluated on main too). Baking
+        // to a CGImage via a shared context makes the cache hold real pixels that
+        // draw instantly.
+        let newNSImage: NSImage
+        if let cg = Self.ciContext.createCGImage(outputImage, from: outputImage.extent) {
+            newNSImage = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        } else {
+            let rep = NSCIImageRep(ciImage: outputImage)
+            let fallback = NSImage(size: rep.size)
+            fallback.addRepresentation(rep)
+            newNSImage = fallback
+        }
         
         // Cache result
         if let key = cacheKey {

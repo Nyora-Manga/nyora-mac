@@ -59,6 +59,10 @@ enum NavDestination: String, CaseIterable, Identifiable, Hashable {
 private struct AnimeSidebarRow: View {
     let destination: NavDestination
     let isSelected: Bool
+    /// Passed in (not read from the static `Color.appAccent`) so a scheme change is an
+    /// actual input change — otherwise SwiftUI skips re-running this row's body when only
+    /// the accent changes and the selected pill keeps the old colour until the next event.
+    let accent: Color
     var badgeCount: Int? = nil
     var badgeIsRed: Bool = false
     var showLive: Bool = false
@@ -79,21 +83,20 @@ private struct AnimeSidebarRow: View {
                 .opacity(isHovered && !isSelected ? 1 : 0)
                 .animation(.hoverSpring, value: isHovered)
 
-                // Selected 3pt tri-color gradient bar
+                // Selected 3pt gradient bar. The selected row's background is an
+                // accent-tinted glass (RowSelectionGlass), so this sits *on* the accent
+                // and must be drawn in the contrasting colour — an accent bar on an
+                // accent fill is invisible, as was the accent glow around it.
                 Rectangle()
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.appAccent,
-                                Color.appAccent.opacity(0.55)
+                                Color.onAccent,
+                                Color.onAccent.opacity(0.55)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
-                    )
-                    .shadow(
-                        color: Color.appAccent.opacity(isSelected ? 0.80 : 0.0),
-                        radius: isSelected ? 9 : 0
                     )
                     .frame(width: 3, height: 20)
                     .opacity(isSelected ? 1 : 0)
@@ -101,21 +104,19 @@ private struct AnimeSidebarRow: View {
             }
             .frame(width: 3)
 
-            // SF Symbol icon
+            // SF Symbol icon — on the accent-tinted selected row it must be the
+            // contrasting colour, not the accent itself, or it disappears.
             Image(systemName: destination.systemImage)
                 .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.appAccent : Color.secondary)
-                .shadow(
-                    color: isSelected ? Color.appAccent.opacity(0.80) : .clear,
-                    radius: isSelected ? 9 : 0
-                )
+                .foregroundStyle(isSelected ? Color.onAccent : Color.secondary)
                 .frame(width: 18, height: 18)
                 .animation(.hoverSpring, value: isSelected)
 
-            // Title
+            // Title. `.primary` only happened to read here because the accent is dark;
+            // a light accent (Yuki) would have put white text on a near-white fill.
             Text(destination.title)
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
-                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .foregroundStyle(isSelected ? Color.onAccent : Color.secondary)
                 .animation(.hoverSpring, value: isSelected)
 
             Spacer()
@@ -125,7 +126,7 @@ private struct AnimeSidebarRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .modifier(RowSelectionGlass(isSelected: isSelected, isHovered: isHovered))
+        .modifier(RowSelectionGlass(isSelected: isSelected, isHovered: isHovered, accent: accent))
         .scaleEffect(isSelected ? 1.0 : (isHovered ? 1.01 : 1.0))
         .animation(.hoverSpring, value: isSelected)
         .animation(.hoverSpring, value: isHovered)
@@ -186,11 +187,19 @@ private struct AnimeSidebarRow: View {
 private struct RowSelectionGlass: ViewModifier {
     let isSelected: Bool
     let isHovered: Bool
+    let accent: Color
 
     func body(content: Content) -> some View {
         if isSelected {
+            // Explicit accent fill (passed in, not the static Color.appAccent) — the
+            // `.interactive()` glass highlight used to pick up the SYSTEM accent, and a
+            // static read wouldn't re-render on a scheme change. This guarantees the
+            // selection is the user's live scheme colour.
             content
-                .adaptiveGlass(.rect(cornerRadius: 12), tint: Color.appAccent, interactive: true)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(accent)
+                )
         } else if isHovered {
             content
                 .background(
@@ -360,19 +369,23 @@ struct SidebarView: View {
     }
 
     private func row(_ destination: NavDestination) -> some View {
-        Button {
-            selection = destination
-        } label: {
-            AnimeSidebarRow(
-                destination: destination,
-                isSelected: selection == destination,
-                badgeCount: badgeCount(for: destination),
-                badgeIsRed: destination == .updates,
-                showLive: destination == .reader && appState.activeChapter != nil
-            )
-        }
-        .buttonStyle(.plain)
+        // A tap gesture, NOT a Button: a Button inside the sidebar ScrollView joins AppKit's
+        // responder chain, so on every selection change AppKit auto-scrolled the ScrollView to
+        // reveal the focused control — which yanked the whole sidebar up (the selected row
+        // jumped under the titlebar) and left scrolling stuck. A plain tappable row has no
+        // scroll-to-visible behaviour, so the sidebar stays put.
+        AnimeSidebarRow(
+            destination: destination,
+            isSelected: selection == destination,
+            accent: appState.readerPrefs.effectiveAccentColor,
+            badgeCount: badgeCount(for: destination),
+            badgeIsRed: destination == .updates,
+            showLive: destination == .reader && appState.activeChapter != nil
+        )
         .contentShape(Rectangle())
+        .onTapGesture {
+            selection = destination
+        }
     }
 
     private func badgeCount(for destination: NavDestination) -> Int? {

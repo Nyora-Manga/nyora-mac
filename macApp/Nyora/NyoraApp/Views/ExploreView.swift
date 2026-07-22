@@ -4,7 +4,6 @@ import AppKit
 @MainActor
 struct ExploreView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     enum BrowseMode: String, CaseIterable, Identifiable {
         case popular = "Popular"
@@ -26,7 +25,9 @@ struct ExploreView: View {
     @State private var browseMode: BrowseMode = .popular
     @State private var query: String = ""
     @State private var selectedGenreFilter: String? = nil
-    @FocusState private var isSearchQueryFocused: Bool
+    // Source-grid landing (nyora-web wireframe): search-all-sources text + language filter.
+    @State private var sourceSearch: String = ""
+    @State private var languageFilter: String? = nil
 
     // Cached derived state — avoids recomputing on every render cycle
     @State private var cachedFilteredBrowseMangas: [MangaSummary] = []
@@ -35,18 +36,26 @@ struct ExploreView: View {
     var body: some View {
         GeometryReader { geo in
             let totalWidth = geo.size.width
-            let railWidth: CGFloat = min(230, max(190, totalWidth * 0.21))
             let detailsVisible = appState.activeMangaDetails != nil || appState.isDetailLoading
-            let panelWidth: CGFloat = min(480, max(320, totalWidth * 0.46))
-            HStack(spacing: 0) {
-                sourceRail
-                    .frame(width: railWidth)
-                Divider().opacity(0.5)
-                browseArea
-                    .frame(maxWidth: .infinity)
+            // A proper full overview page (thin dismiss margin on the left), not a
+            // cramped 480px slide-over. The detail view itself lays out as two
+            // columns (cover/info + chapters) when it has the room.
+            let panelWidth: CGFloat = min(totalWidth - 28, max(760, totalWidth))
+            // Two states, nyora-web style: with no source chosen we show the "Manga sources"
+            // grid (language-divided, searchable); once a source is picked we show its browse
+            // area. The old always-on 468-source rail is gone.
+            Group {
+                if appState.selectedSourceId == nil {
+                    SourcesGridLanding(
+                        search: $sourceSearch,
+                        languageFilter: $languageFilter,
+                        onOpen: { selectSource($0.id) }
+                    )
+                } else {
+                    browseArea
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(exploreBackdrop)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay(alignment: .trailing) {
                 if detailsVisible {
                     ZStack(alignment: .trailing) {
@@ -87,8 +96,58 @@ struct ExploreView: View {
                 updateFilteredMangas()
             }
             .navigationTitle(activeSource?.name ?? "Explore")
+            // The source's engine/language line lives in the real toolbar subtitle
+            // now, instead of a hand-drawn header that duplicated the pane title.
+            .navigationSubtitle(
+                activeSource.map { "\($0.engine) · \($0.lang.uppercased())" } ?? ""
+            )
             .toolbar {
+                // When browsing a source, a "Sources" back button returns to the grid landing,
+                // and the quick-switch popover lets you jump to another source without going back.
+                // On the grid itself there's nothing here — the grid IS the source picker.
+                if appState.selectedSourceId != nil {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            deselectSource()
+                        } label: {
+                            Label("Sources", systemImage: "chevron.left")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .help("Back to all sources")
+                    }
+                    ToolbarItem(placement: .navigation) {
+                        SourcePickerButton()
+                    }
+                }
+                // Finder puts its view-mode segmented control in the toolbar; so do we.
+                if let s = activeSource, s.isInstalled {
+                    ToolbarItem {
+                        Picker("Mode", selection: $browseMode) {
+                            ForEach(BrowseMode.allCases) { mode in
+                                Label(mode.rawValue, systemImage: mode.systemImage).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .fixedSize()
+                        .help("Browse mode")
+                    }
+                }
+
                 ToolbarItemGroup {
+                    // Manual Cloudflare solve for the selected source — opens the WebView
+                    // verification window on demand, for when a source is CF-blocked but the
+                    // error doesn't auto-trigger the solver (e.g. "Authorization required").
+                    if let s = activeSource, s.isInstalled {
+                        Button {
+                            Task { await appState.solveCloudflare(for: s.id) }
+                        } label: {
+                            Label("Solve Cloudflare", systemImage: "checkmark.shield")
+                        }
+                        .disabled(appState.isSolvingCloudflare)
+                        .help("Open the Cloudflare verification for \(s.name)")
+                    }
+
                     Button {
                         Task { await appState.openCatalog() }
                     } label: {
@@ -102,11 +161,19 @@ struct ExploreView: View {
                     }
                 }
             }
+            .onChange(of: appState.selectedSourceId) { _, _ in
+                // Reset to Popular when switching sources so the grid always shows content.
+                browseMode = .popular
+            }
+            .onChange(of: browseMode) { _, newMode in
+                selectedGenreFilter = nil
+                updateFilteredMangas()
+                guard let sid = appState.selectedSourceId else { return }
+                if newMode != .search {
+                    Task { await loadCurrentMode(sid: sid) }
+                }
+            }
         }
-    }
-
-    private var exploreBackdrop: some View {
-        Color(.windowBackgroundColor).ignoresSafeArea()
     }
 
     private func closeDetails() {
@@ -189,16 +256,17 @@ struct ExploreView: View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Sources")
-                    .font(.title3.weight(.bold))
+                    .font(.headline)
                 Spacer()
                 Text("\(installedSourceCount)")
-                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.top, 14)
             .padding(.bottom, 8)
 
+            // A real AppKit NSSearchField — already the native control, kept as-is.
             SourceFilterSearchField(text: $sourceFilter, placeholder: "Filter sources")
                 .frame(height: 28)
                 .padding(.horizontal, 12)
@@ -208,7 +276,7 @@ struct ExploreView: View {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text(appState.isBrowseLoading ? "Loading results" : "Refreshing")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -216,17 +284,96 @@ struct ExploreView: View {
                 .padding(.bottom, 6)
             }
 
-            Divider().opacity(0.4)
+            Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    customSourceSections
-                }
-                .padding(8)
-            }
+            sourceList
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.primary.opacity(0.025))
+    }
+
+    /// The rail is a real `List` with system selection, so macOS draws the
+    /// selected row (and its correct on-accent text colour) instead of a
+    /// hand-rolled accent-on-accent fill.
+    private var sourceList: some View {
+        List(selection: railSelection) {
+            if !pinnedSources.isEmpty {
+                Section("Pinned") {
+                    ForEach(pinnedSources) { source in
+                        SourceListRow(source: source)
+                            .tag(source.id)
+                            .contextMenu { sourceRowMenu(source) }
+                    }
+                }
+            }
+            if !installedSources.isEmpty {
+                Section("Installed") {
+                    ForEach(installedSources) { source in
+                        SourceListRow(source: source)
+                            .tag(source.id)
+                            .contextMenu { sourceRowMenu(source) }
+                    }
+                }
+            }
+            if !availableSources.isEmpty {
+                Section("Available") {
+                    ForEach(availableSources) { source in
+                        SourceListRow(source: source)
+                            .tag(source.id)
+                            .contextMenu { sourceRowMenu(source) }
+                    }
+                }
+            }
+            if filteredSources.isEmpty {
+                EmptyStateView(
+                    icon: "puzzlepiece.extension",
+                    title: appState.sources.isEmpty ? "No sources yet" : "No matches",
+                    message: appState.sources.isEmpty
+                        ? "Use Refresh Catalog to pull from configured repositories."
+                        : "Try a different filter or clear the NSFW toggle in Settings."
+                )
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+    }
+
+    private var railSelection: Binding<String?> {
+        Binding(
+            get: { appState.selectedSourceId },
+            set: { newValue in
+                guard let id = newValue else { return }
+                selectSource(id)
+            }
+        )
+    }
+
+    private func selectSource(_ id: String) {
+        selectedGenreFilter = nil
+        appState.selectedSourceId = id
+        appState.selectedBrowseMangaId = nil
+        appState.activeMangaDetails = nil
+        appState.detailsIsFavourited = false
+        appState.browseMangas = []
+        appState.isBrowseLoading = false
+        appState.isDetailLoading = false
+        if appState.sources.first(where: { $0.id == id })?.isInstalled == true {
+            Task { await loadCurrentMode(sid: id) }
+        }
+    }
+
+    /// Return to the source-grid landing: clear the active source and any open detail/browse
+    /// state so the grid shows cleanly.
+    private func deselectSource() {
+        appState.selectedSourceId = nil
+        appState.selectedBrowseMangaId = nil
+        appState.activeMangaDetails = nil
+        appState.detailsIsFavourited = false
+        appState.browseMangas = []
+        appState.isBrowseLoading = false
+        appState.isDetailLoading = false
+        selectedGenreFilter = nil
+        query = ""
     }
 
     // MARK: - Browse pane
@@ -238,12 +385,18 @@ struct ExploreView: View {
 
     private var browseArea: some View {
         VStack(spacing: 0) {
-            if let s = activeSource, s.isInstalled {
-                browseHeader
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
-                Divider().opacity(0.4)
+            // The title/subtitle block moved to the real navigation title + subtitle,
+            // and the mode picker to the toolbar; only the search field is left.
+            if let s = activeSource, s.isInstalled, browseMode == .search {
+                SourceFilterSearchField(
+                    text: $query,
+                    placeholder: "Search this source",
+                    onSubmit: { Task { await appState.searchActiveSource(query: query) } }
+                )
+                .frame(height: 28)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                Divider()
             }
             browseContent
         }
@@ -312,125 +465,34 @@ struct ExploreView: View {
         }
     }
 
+    // Stock bordered toggles. `.toggleStyle(.button)` is the system's own filter
+    // chip: it fills with the accent when on and picks the readable foreground
+    // itself, so no gradient capsule and no hardcoded white-on-accent.
     private var quickFilterChips: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Top Categories")
-                .font(.caption2.weight(.bold))
-                .textCase(.uppercase)
-                .kerning(1.2)
-                .foregroundStyle(.secondary)
+                .font(.headline)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.65)) {
-                            selectedGenreFilter = nil
-                        }
-                    } label: {
-                        Text("All")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(
-                                selectedGenreFilter == nil
-                                    ? AnyShapeStyle(LinearGradient(
-                                        colors: [Color.appAccent.opacity(0.97), Color.appAccent.opacity(0.65)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                      ))
-                                    : AnyShapeStyle(LinearGradient(
-                                        colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.04)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                      )),
-                                in: Capsule()
-                            )
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(
-                                        selectedGenreFilter == nil
-                                            ? Color.clear
-                                            : Color.primary.opacity(0.10),
-                                        lineWidth: 0.6
-                                    )
-                            )
-                            .overlay(alignment: .top) {
-                                if selectedGenreFilter == nil {
-                                    // RadialGradient highlight spot for selected depth
-                                    RadialGradient(
-                                        colors: [Color.white.opacity(0.32), Color.clear],
-                                        center: .top,
-                                        startRadius: 0,
-                                        endRadius: 30
-                                    )
-                                    .clipShape(Capsule())
-                                    .allowsHitTesting(false)
-                                }
-                            }
-                            .foregroundStyle(selectedGenreFilter == nil ? .white : .primary)
-                            .shadow(
-                                color: selectedGenreFilter == nil ? Color.appAccent.opacity(0.40) : .clear,
-                                radius: 8
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.65), value: selectedGenreFilter)
+                    Toggle(
+                        "All",
+                        isOn: Binding(
+                            get: { selectedGenreFilter == nil },
+                            set: { if $0 { selectedGenreFilter = nil } }
+                        )
+                    )
+                    .toggleStyle(.button)
 
                     ForEach(uniqueGenres, id: \.self) { genre in
-                        let isActive = selectedGenreFilter == genre
-                        Button {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.65)) {
-                                selectedGenreFilter = isActive ? nil : genre
-                            }
-                        } label: {
-                            Text(genre)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(
-                                    isActive
-                                        ? AnyShapeStyle(LinearGradient(
-                                            colors: [Color.appAccent.opacity(0.97), Color.appAccent.opacity(0.65)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                          ))
-                                        : AnyShapeStyle(LinearGradient(
-                                            colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.04)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                          )),
-                                    in: Capsule()
-                                )
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(
-                                            isActive
-                                                ? Color.clear
-                                                : Color.primary.opacity(0.10),
-                                            lineWidth: 0.6
-                                        )
-                                )
-                                .overlay(alignment: .top) {
-                                    if isActive {
-                                        // RadialGradient highlight spot for selected depth
-                                        RadialGradient(
-                                            colors: [Color.white.opacity(0.32), Color.clear],
-                                            center: .top,
-                                            startRadius: 0,
-                                            endRadius: 30
-                                        )
-                                        .clipShape(Capsule())
-                                        .allowsHitTesting(false)
-                                    }
-                                }
-                                .foregroundStyle(isActive ? .white : .primary)
-                                .shadow(
-                                    color: isActive ? Color.appAccent.opacity(0.40) : .clear,
-                                    radius: 8
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: selectedGenreFilter)
+                        Toggle(
+                            genre,
+                            isOn: Binding(
+                                get: { selectedGenreFilter == genre },
+                                set: { selectedGenreFilter = $0 ? genre : nil }
+                            )
+                        )
+                        .toggleStyle(.button)
                     }
                 }
                 .padding(.horizontal, 2)
@@ -462,66 +524,6 @@ struct ExploreView: View {
         }
     }
 
-    private var browseHeader: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(activeSource?.name ?? "Explore")
-                        .font(.title2.weight(.bold))
-                    Text(activeSource.map { "\($0.engine) · \($0.lang.uppercased())" } ?? "Pick a source")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("Mode", selection: $browseMode) {
-                    ForEach(BrowseMode.allCases) { mode in
-                        Label(mode.rawValue, systemImage: mode.systemImage).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .tint(Color.appAccent)
-                .onChange(of: browseMode) { _, newMode in
-                    selectedGenreFilter = nil
-                    updateFilteredMangas()
-                    guard let sid = appState.selectedSourceId else { return }
-                    if newMode != .search {
-                        Task { await loadCurrentMode(sid: sid) }
-                    }
-                }
-            }
-
-            if browseMode == .search {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                        .imageScale(.small)
-                    TextField("Search this source", text: $query)
-                        .textFieldStyle(.plain)
-                        .focused($isSearchQueryFocused)
-                        .onSubmit {
-                            Task { await appState.searchActiveSource(query: query) }
-                        }
-                    if !query.isEmpty {
-                        Button { query = "" } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.tertiary)
-                                .imageScale(.small)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .glassOverlay(cornerRadius: 10)
-                .onTapGesture {
-                    isSearchQueryFocused = true
-                }
-            }
-        }
-    }
-
     private func loadCurrentMode(sid: String) async {
         switch browseMode {
         case .popular: await appState.loadPopular(sourceId: sid)
@@ -542,13 +544,10 @@ struct ExploreView: View {
                     .lineLimit(1)
                 Spacer()
                 Button { closeDetails() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(Color.primary.opacity(0.08)))
+                    Label("Close", systemImage: "xmark")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
                 .keyboardShortcut(.cancelAction)
                 .help("Close")
             }
@@ -575,77 +574,8 @@ struct ExploreView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .adaptiveGlass(.rect(cornerRadius: 20))
-    }
-
-    @ViewBuilder
-    private var customSourceSections: some View {
-        if !pinnedSources.isEmpty {
-            customSectionHeader("Pinned")
-            ForEach(pinnedSources) { source in
-                customSourceRow(source)
-            }
-        }
-        if !installedSources.isEmpty {
-            customSectionHeader("Installed")
-            ForEach(installedSources) { source in
-                customSourceRow(source)
-            }
-        }
-        if !availableSources.isEmpty {
-            customSectionHeader("Available")
-            ForEach(availableSources) { source in
-                customSourceRow(source)
-            }
-        }
-        if filteredSources.isEmpty {
-            EmptyStateView(
-                icon: "puzzlepiece.extension",
-                title: appState.sources.isEmpty ? "No sources yet" : "No matches",
-                message: appState.sources.isEmpty
-                    ? "Use Refresh Catalog to pull from configured repositories."
-                    : "Try a different filter or clear the NSFW toggle in Settings."
-            )
-            .padding(.top, 40)
-        }
-    }
-
-    private func customSectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .textCase(.uppercase)
-            .tracking(1.0)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
-    private func customSourceRow(_ source: SourceSummary) -> some View {
-        let isSelected = appState.selectedSourceId == source.id
-        Button {
-            selectedGenreFilter = nil
-            appState.selectedSourceId = source.id
-            appState.selectedBrowseMangaId = nil
-            appState.activeMangaDetails = nil
-            appState.detailsIsFavourited = false
-            appState.browseMangas = []
-            appState.isBrowseLoading = false
-            appState.isDetailLoading = false
-            if source.isInstalled {
-                Task { await loadCurrentMode(sid: source.id) }
-            }
-        } label: {
-            SourceListRow(source: source, isSelected: isSelected)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? Color.appAccent.opacity(0.16) : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu { sourceRowMenu(source) }
+        // Opaque system panel instead of a glass slab.
+        .background(Color.appBackground)
     }
 
     @ViewBuilder
@@ -668,6 +598,8 @@ struct ExploreView: View {
 private struct SourceFilterSearchField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
+    /// Fired when the user presses Return. Nil for filter-as-you-type fields.
+    var onSubmit: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
@@ -682,6 +614,7 @@ private struct SourceFilterSearchField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.onSubmit = onSubmit
         // Do not push SwiftUI's value back into AppKit while the field editor
         // is active. During live typing, SwiftUI can re-render from unrelated
         // state changes before the binding catches up, which resets each key.
@@ -692,19 +625,36 @@ private struct SourceFilterSearchField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, onSubmit: onSubmit)
     }
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         @Binding private var text: String
+        var onSubmit: (() -> Void)?
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, onSubmit: (() -> Void)?) {
             _text = text
+            self.onSubmit = onSubmit
         }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
             text = field.stringValue
+        }
+
+        // Return submits. The field's own clear button just empties the text —
+        // it does not fire a search, matching the old hand-built clear button.
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+                  let onSubmit
+            else { return false }
+            text = control.stringValue
+            onSubmit()
+            return true
         }
 
         func searchFieldDidStartSearching(_ sender: NSSearchField) {
@@ -722,47 +672,39 @@ private struct SourceFilterSearchField: NSViewRepresentable {
 @MainActor
 private struct SourceListRow: View {
     let source: SourceSummary
-    var isSelected: Bool = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            Text(source.lang.uppercased().prefix(2))
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(isSelected ? Color.appAccent : .secondary)
-                .frame(width: 26, height: 26)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? Color.appAccent.opacity(0.20) : Color.primary.opacity(0.06))
-                )
+        // No `isSelected` styling: the List draws selection, which also picks the
+        // correct on-accent text colour for whichever of the 12 themes is active.
+        HStack(spacing: 10) {
+            // Matches CatalogSheet's source rows — the two source lists now agree.
+            Image(systemName: "puzzlepiece.extension")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(source.name)
-                        .font(.subheadline.weight(.medium))
+                        .font(.body.weight(.medium))
                         .lineLimit(1)
-                        .foregroundStyle(.primary)
                     if source.isNsfw {
                         Text("18+")
-                            .font(.system(size: 9, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.red.opacity(0.9)))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.red)
                             .accessibilityLabel("Adult content, 18 plus")
                     }
                 }
                 Text("\(source.engine) · \(source.lang.uppercased())\(source.isNsfw ? " · NSFW" : "")")
-                    .font(.caption2)
-                    .foregroundStyle(source.isNsfw ? Color.red.opacity(0.85) : .secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
             Image(systemName: source.isInstalled ? "checkmark.circle.fill" : "arrow.down.circle")
-                .foregroundStyle(source.isInstalled ? Color.green.opacity(0.85) : Color.secondary)
+                .foregroundStyle(source.isInstalled ? Color.green : Color.secondary)
                 .imageScale(.small)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
 }
@@ -770,6 +712,427 @@ private struct SourceListRow: View {
 // MARK: - Cover card
 
 @MainActor
+// MARK: - Sources grid landing (nyora-web wireframe)
+
+/// The Explore landing shown when no source is selected: a "Manga sources" grid divided by
+/// language, with a search-all-sources field and a language dropdown filter (with counts) —
+/// mirroring nyora-web. Each card shows the source icon (or a language badge), name, and
+/// language; pinned sources are highlighted. Tapping a card opens that source's browse view.
+private struct SourcesGridLanding: View {
+    @EnvironmentObject var appState: AppState
+    @Binding var search: String
+    @Binding var languageFilter: String?
+    let onOpen: (SourceSummary) -> Void
+    @State private var warmedIcons = false
+
+    /// Browseable sources = installed, NSFW-filtered. These are what the grid divides by language.
+    private var installed: [SourceSummary] {
+        appState.visibleSources.filter(\.isInstalled)
+    }
+
+    private var languageOptions: [LanguageOption] {
+        LanguageOption.options(from: installed)
+    }
+
+    /// Sources after the language + search filters, pinned first then alphabetical.
+    private var filtered: [SourceSummary] {
+        var list = installed
+        if let lang = languageFilter {
+            list = list.filter { $0.languageCode == lang }
+        }
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        if !q.isEmpty {
+            list = list.filter {
+                $0.name.lowercased().contains(q)
+                    || $0.languageName.lowercased().contains(q)
+                    || $0.languageCode.contains(q)
+            }
+        }
+        return list.sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var currentLanguageLabel: String {
+        guard let code = languageFilter,
+              let opt = languageOptions.first(where: { $0.code == code })
+        else { return "All languages (\(installed.count))" }
+        return "\(opt.label) (\(opt.count))"
+    }
+
+    /// Binding that maps the "" sentinel (used for the "All languages" row) to `nil`.
+    private var languageSelection: Binding<String> {
+        Binding(
+            get: { languageFilter ?? "" },
+            set: { languageFilter = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchBar
+            Divider().opacity(0.5)
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task {
+            // The engine resolves source favicons in the background; if none have arrived
+            // yet, re-fetch a few times so the warmed icons replace the language badges.
+            guard !warmedIcons else { return }
+            warmedIcons = true
+            for _ in 0..<4 {
+                if !installed.isEmpty && !installed.allSatisfy({ $0.iconUrl.isEmpty }) { break }
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                await appState.refreshSources()
+            }
+        }
+    }
+
+    // Full-width "Search all sources…" field, like the web's top bar.
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search all sources…", text: $search)
+                .textFieldStyle(.plain)
+            if !search.isEmpty {
+                Button { search = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .adaptiveGlass(.capsule)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if installed.isEmpty {
+            ContentUnavailableView {
+                Label("No sources yet", systemImage: "puzzlepiece.extension")
+            } description: {
+                Text("Add sources from the catalogue to start browsing.")
+            } actions: {
+                Button("Add Sources") { Task { await appState.openCatalog() } }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appAccent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if filtered.isEmpty {
+            ContentUnavailableView.search(text: search)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    headerRow
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 116, maximum: 150), spacing: 16, alignment: .top)],
+                        alignment: .leading,
+                        spacing: 16
+                    ) {
+                        ForEach(filtered) { source in
+                            SourceGridCard(
+                                source: source,
+                                onTap: { onOpen(source) },
+                                onTogglePin: { Task { await appState.togglePinSource(source.id) } }
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    // "Manga sources" heading + the language dropdown + Catalog, matching the web's section head.
+    private var headerRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Manga sources")
+                .font(.title3.weight(.semibold))
+            Text("\(filtered.count)")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+
+            Menu {
+                Picker("Language", selection: languageSelection) {
+                    Text("All languages (\(installed.count))").tag("")
+                    ForEach(languageOptions) { opt in
+                        Text("\(opt.label) (\(opt.count))").tag(opt.code)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe").font(.callout)
+                    Text(currentLanguageLabel).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .adaptiveGlass(.capsule, interactive: true)
+            .help("Filter sources by language")
+
+            Button {
+                Task { await appState.openCatalog() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.grid.2x2").font(.callout)
+                    Text("Catalog")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            .adaptiveGlass(.capsule, interactive: true)
+            .help("Add or manage sources")
+        }
+    }
+}
+
+/// One source card in the grid: icon (or language badge), name, language, pin state.
+private struct SourceGridCard: View {
+    let source: SourceSummary
+    let onTap: () -> Void
+    let onTogglePin: () -> Void
+    @State private var isHovered = false
+    @State private var iconFailed = false
+
+    private var langBadgeText: String {
+        let code = source.languageCode
+        return code.isEmpty ? "?" : String(code.prefix(2)).uppercased()
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 9) {
+                icon
+                    .frame(width: 54, height: 54)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        if source.isPinned {
+                            Image(systemName: "pin.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color.onAccent)
+                                .padding(4)
+                                .background(Circle().fill(Color.appAccent))
+                                .offset(x: 6, y: -6)
+                        }
+                    }
+
+                VStack(spacing: 2) {
+                    Text(source.name)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                    Text(source.languageName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 6)
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .adaptiveGlass(.rect(cornerRadius: 16), interactive: true)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(source.isPinned ? Color.appAccent.opacity(0.6) : Color.clear,
+                              lineWidth: source.isPinned ? 1.5 : 0)
+        )
+        .scaleEffect(isHovered ? 1.03 : 1.0)
+        .shadow(color: .black.opacity(isHovered ? 0.18 : 0.0), radius: isHovered ? 10 : 0, y: isHovered ? 5 : 0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Button(source.isPinned ? "Unpin" : "Pin",
+                   systemImage: source.isPinned ? "pin.slash" : "pin",
+                   action: onTogglePin)
+        }
+        .help(source.name)
+    }
+
+    // Real source icon when available; otherwise a neutral language badge (like the web).
+    @ViewBuilder
+    private var icon: some View {
+        if !source.iconUrl.isEmpty, !iconFailed,
+           let url = URL(string: source.iconUrl) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case let .success(image):
+                    // Favicon fitted on a neutral tile so small/transparent icons read like
+                    // an app icon rather than being cropped edge-to-edge.
+                    ZStack {
+                        Color.primary.opacity(0.06)
+                        image.resizable().scaledToFit().padding(11)
+                    }
+                case .failure:
+                    languageBadge.onAppear { iconFailed = true }
+                case .empty:
+                    ZStack { languageBadge; ProgressView().controlSize(.small) }
+                @unknown default:
+                    languageBadge
+                }
+            }
+        } else {
+            languageBadge
+        }
+    }
+
+    private var languageBadge: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.09))
+            Text(langBadgeText)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Source picker (toolbar popover, replaces the 468-source rail)
+
+private struct SourcePickerButton: View {
+    @EnvironmentObject var appState: AppState
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.callout)
+                Text(appState.activeSourceSummary?.name ?? "Choose Source")
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help("Switch source")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            SourcePickerPopover { isPresented = false }
+                .environmentObject(appState)
+                .frame(width: 320, height: 440)
+        }
+    }
+}
+
+private struct SourcePickerPopover: View {
+    @EnvironmentObject var appState: AppState
+    @State private var filter = ""
+    let dismiss: () -> Void
+
+    private var installed: [SourceSummary] {
+        appState.visibleSources.filter(\.isInstalled)
+    }
+    private var filtered: [SourceSummary] {
+        guard !filter.isEmpty else { return installed }
+        let q = filter.lowercased()
+        return installed.filter { $0.name.lowercased().contains(q) || $0.lang.lowercased().contains(q) }
+    }
+    private var pinned: [SourceSummary] {
+        filtered.filter(\.isPinned).sorted { $0.name < $1.name }
+    }
+    private var recents: [SourceSummary] {
+        appState.recentSourceIds.compactMap { id in
+            filtered.first { $0.id == id && !$0.isPinned }
+        }
+    }
+    private var byLanguage: [(String, [SourceSummary])] {
+        let recentIds = Set(recents.map(\.id))
+        let rest = filtered.filter { !$0.isPinned && !recentIds.contains($0.id) }
+        return Dictionary(grouping: rest, by: { $0.lang.uppercased() })
+            .map { ($0.key, $0.value.sorted { $0.name < $1.name }) }
+            .sorted { $0.0 < $1.0 }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Search sources", text: $filter)
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+            Divider()
+            List {
+                if !pinned.isEmpty {
+                    Section("Pinned") { ForEach(pinned) { row($0) } }
+                }
+                if !recents.isEmpty {
+                    Section("Recent") { ForEach(recents) { row($0) } }
+                }
+                ForEach(byLanguage, id: \.0) { lang, list in
+                    Section(lang) { ForEach(list) { row($0) } }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            Divider()
+            Button {
+                dismiss()
+                Task { await appState.openCatalog() }
+            } label: {
+                Label("Manage Sources…", systemImage: "square.grid.2x2")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ s: SourceSummary) -> some View {
+        Button {
+            dismiss()
+            Task { await appState.loadPopular(sourceId: s.id) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(s.name).lineLimit(1)
+                    Text("\(s.engine) · \(s.lang.uppercased())")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if s.isPinned {
+                    Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary)
+                }
+                if s.id == appState.selectedSourceId {
+                    Image(systemName: "checkmark").foregroundStyle(Color.appAccent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(s.isPinned ? "Unpin" : "Pin", systemImage: s.isPinned ? "pin.slash" : "pin") {
+                Task { await appState.togglePinSource(s.id) }
+            }
+        }
+    }
+}
+
 private struct MangaCoverCard: View {
     let manga: MangaSummary
     let isSelected: Bool
@@ -777,58 +1140,65 @@ private struct MangaCoverCard: View {
 
     @State private var isHovered = false
 
-    private var accentColor: Color { manga.accent }
-
     var body: some View {
         Button {
             onTap()
         } label: {
-            VStack(alignment: .leading, spacing: 7) {
-                ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 6) {
+                // Artwork-forward cover — edge-to-edge with rounded corners and a soft depth
+                // shadow, the way App Store / TV / Music show catalogue art. No boxy card
+                // chrome around it. Fixed 2:3 so every cover is uniform regardless of source
+                // image dimensions.
+                ZStack {
+                    Color.primary.opacity(0.06)
                     coverImage
-                        .aspectRatio(2.0/3.0, contentMode: .fill)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(
-                                    isSelected ? Color.appAccent : Color.primary.opacity(0.12),
-                                    lineWidth: isSelected ? 2 : 0.75
-                                )
+                }
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(
+                            isSelected ? Color.appAccent : Color.white.opacity(0.08),
+                            lineWidth: isSelected ? 2.5 : 0.5
                         )
-
+                )
+                .overlay(alignment: .topTrailing) {
                     if manga.unread > 0 {
                         Text("\(manga.unread)")
-                            .font(.caption2.bold())
-                            .foregroundStyle(.white)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(Color.onAccent)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
                             .background(Capsule().fill(Color.appAccent))
                             .padding(6)
                     }
-
+                }
+                .overlay(alignment: .bottom) {
                     if manga.progress > 0 {
                         ProgressView(value: Double(min(manga.progress, 1.0)))
                             .progressViewStyle(.linear)
                             .tint(Color.appAccent)
                             .scaleEffect(y: 0.5)
-                            .padding(.horizontal, 4)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            .padding(.horizontal, 6)
+                            .padding(.bottom, 6)
                             .allowsHitTesting(false)
                     }
                 }
-                .shadow(color: .black.opacity(isHovered ? 0.28 : 0.16), radius: isHovered ? 10 : 5, y: isHovered ? 5 : 3)
+                .shadow(color: .black.opacity(isHovered ? 0.35 : 0.22), radius: isHovered ? 12 : 6, y: isHovered ? 6 : 3)
 
+                // Reserve two lines so 1-line and 2-line titles yield equal-height cards,
+                // which keeps the grid rows aligned (no title bleeding into the row below).
                 Text(manga.title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Subtle App-Store-style hover lift.
         .scaleEffect(isHovered ? 1.03 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)
         .onHover { isHovered = $0 }
@@ -866,210 +1236,6 @@ private struct MangaCoverCard: View {
     }
 }
 
-/// Cover-card border: a conic accent sweep while hovered (modern rotating-light
-/// edge), falling back to the resting straight gradient stroke otherwise.
-@MainActor
-private struct MangaCoverBorder: ViewModifier {
-    let isHovered: Bool
-    let accent: Color
-
-    func body(content: Content) -> some View {
-        if isHovered {
-            content.conicBorder(cornerRadius: 16, accent: accent)
-        } else {
-            content.overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.primary.opacity(0.22), Color.primary.opacity(0.06)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.7
-                    )
-            )
-        }
-    }
-}
-
-// MARK: - Hero card
-
-@MainActor
-private struct ExploreHeroCard: View {
-    let manga: MangaSummary
-    let sourceName: String
-    let mode: ExploreView.BrowseMode
-    let onOpen: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            // Background: AsyncImage scaledToFill, fallback to accent gradient
-            heroArtwork
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-
-            // 6-stop cinematic vignette overlay
-            LinearGradient(
-                stops: [
-                    .init(color: .clear,                   location: 0.00),
-                    .init(color: .clear,                   location: 0.20),
-                    .init(color: .black.opacity(0.04),     location: 0.38),
-                    .init(color: .black.opacity(0.45),     location: 0.62),
-                    .init(color: .black.opacity(0.82),     location: 0.84),
-                    .init(color: .black.opacity(0.96),     location: 1.00),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
-
-            // Top-right metric boxes
-            VStack(alignment: .trailing, spacing: 8) {
-                heroMetricBox(value: "\(manga.unread)", label: "Unread")
-                heroMetricBox(value: "\(manga.tags.count)", label: "Tags")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .padding(14)
-
-            // Bottom-left content
-            VStack(alignment: .leading, spacing: 10) {
-                // Mode badge
-                Text(mode.rawValue.uppercased())
-                    .font(.caption2.bold())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.appAccent.opacity(0.90), Color.appAccent.opacity(0.55)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        in: Capsule()
-                    )
-
-                // Title
-                Text(manga.title)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-
-                // Genre tags — first 3
-                let genreTags = Array(manga.tags.prefix(3))
-                if !genreTags.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(Array(genreTags.enumerated()), id: \.offset) { _, tag in
-                            Text(tag.capitalized)
-                                .font(.caption2)
-                                .foregroundStyle(.white.opacity(0.75))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.white.opacity(0.08), in: Capsule())
-                        }
-                    }
-                }
-
-                // CTA row: Read Now button + source name
-                HStack(alignment: .center, spacing: 12) {
-                    Button("Read Now") {
-                        onOpen()
-                    }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color.appAccent)
-                        .font(.subheadline.bold())
-                        .overlay(
-                            ZStack {
-                                LinearGradient(
-                                    colors: [Color.white.opacity(0.15), Color.clear],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .allowsHitTesting(false)
-                        )
-
-                    Text(sourceName)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.65))
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 260)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        // Top-left shimmer inner highlight
-        .overlay(
-            LinearGradient(
-                colors: [Color.white.opacity(0.08), Color.clear],
-                startPoint: .topLeading,
-                endPoint: .center
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .allowsHitTesting(false)
-        )
-        // Card border: conic accent sweep (modern rotating-light edge)
-        .conicBorder(cornerRadius: 26, accent: Color.appAccent)
-        .shadow(color: .black.opacity(0.22), radius: 14, y: 7)
-        .shadow(color: Color.appAccent.opacity(0.10), radius: 30, y: 5)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-
-    private func heroMetricBox(value: String, label: String) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(value)
-                .font(.headline.bold())
-                .foregroundStyle(.white)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            LinearGradient(
-                colors: [Color.white.opacity(0.12), Color.white.opacity(0.05)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-        )
-    }
-
-    @ViewBuilder
-    private var heroArtwork: some View {
-        if let url = URL(string: manga.coverUrl), !manga.coverUrl.isEmpty {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                default:
-                    heroFallback
-                }
-            }
-        } else {
-            heroFallback
-        }
-    }
-
-    private var heroFallback: some View {
-        AuroraFill(accent: manga.accent, cornerRadius: 26)
-    }
-}
-
 // MARK: - Tag colour palette (keyed by tag.key hash)
 
 private extension Color {
@@ -1090,14 +1256,13 @@ private extension Color {
     }
 }
 
-// MARK: - Chapter row (extracted for hover state)
+// MARK: - Chapter row
 
 @MainActor
 private struct ChapterRow: View {
     let chapter: HelperChapter
+    var downloaded: Bool = false
     let onTap: () -> Void
-
-    @State private var isHovered = false
 
     private var uploadDateString: String {
         guard chapter.uploadDate > 0 else { return "" }
@@ -1133,69 +1298,43 @@ private struct ChapterRow: View {
     var body: some View {
         Button { onTap() } label: {
             HStack(spacing: 12) {
-                // Chapter-number badge — fills with accent on hover
+                // Plain monospaced number — no accent-filled tile, no hover swap.
                 Text(chapterNumberText)
-                    .font(.callout.bold().monospacedDigit())
-                    .foregroundStyle(isHovered ? Color.white : Color.appAccent)
-                    .frame(width: 46, height: 40)
-                    .background(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(
-                                isHovered
-                                    ? AnyShapeStyle(Color.appAccent)
-                                    : AnyShapeStyle(LinearGradient(
-                                        colors: [Color.appAccent.opacity(0.20), Color.appAccent.opacity(0.08)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                      ))
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .strokeBorder(Color.appAccent.opacity(isHovered ? 0 : 0.22), lineWidth: 0.5)
-                    )
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .trailing)
 
-                // Title + meta line
-                VStack(alignment: .leading, spacing: 3) {
+                // Title + ONE secondary line.
+                VStack(alignment: .leading, spacing: 2) {
                     Text(chapter.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
                     if !metaString.isEmpty {
                         Text(metaString)
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
 
                 Spacer(minLength: 8)
 
-                // Read affordance — chevron → play on hover
-                Image(systemName: isHovered ? "play.fill" : "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(isHovered ? Color.appAccent : Color.secondary.opacity(0.4))
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(isHovered ? Color.appAccent.opacity(0.15) : Color.clear))
+                if downloaded {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .help("Downloaded")
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isHovered
-                        ? AnyShapeStyle(Color.appAccent.opacity(0.07))
-                        : AnyShapeStyle(Color.primary.opacity(0.035)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.appAccent.opacity(isHovered ? 0.30 : 0), lineWidth: 1)
-            )
             .contentShape(Rectangle())
-            .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isHovered)
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -1211,10 +1350,43 @@ private struct MangaDetailView: View {
     @State private var showAllTags: Bool = false
     @State private var selectedTab: Int = 0
     @State private var selectedChapterForPages: HelperChapter? = nil
-    @State private var isLibraryHovered: Bool = false
-    @State private var libraryRingScale: CGFloat = 1.0
     @State private var showDownloadSheet: Bool = false
     @State private var chaptersNewestFirst: Bool = false
+    // Chapter overview filters (web-style).
+    @State private var chapterSearch: String = ""
+    @State private var chapterFilter: ChapterFilter = .all
+    @State private var scanlatorFilter: String? = nil
+
+    enum ChapterFilter: String, CaseIterable, Identifiable {
+        case all = "All", downloaded = "Downloaded", notDownloaded = "Not downloaded"
+        var id: String { rawValue }
+    }
+
+    /// Chapter URLs already fully downloaded (for the badge + Downloaded filter).
+    private var downloadedChapterUrls: Set<String> {
+        Set(appState.downloads.filter { $0.status == "COMPLETED" }.map(\.chapterUrl))
+    }
+    /// Distinct scanlators present, for the scanlator filter menu.
+    private var scanlators: [String] {
+        Array(Set(details.chapters.compactMap { s in s.scanlator.flatMap { $0.isEmpty ? nil : $0 } })).sorted()
+    }
+    /// The chapters after sort + search + downloaded + scanlator filters.
+    private var visibleChapters: [HelperChapter] {
+        let ordered = chaptersNewestFirst ? Array(details.chapters.reversed()) : details.chapters
+        let q = chapterSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        let dl = downloadedChapterUrls
+        return ordered.filter { ch in
+            switch chapterFilter {
+            case .all: break
+            case .downloaded: if !dl.contains(ch.url) { return false }
+            case .notDownloaded: if dl.contains(ch.url) { return false }
+            }
+            if let sc = scanlatorFilter, (ch.scanlator ?? "") != sc { return false }
+            guard !q.isEmpty else { return true }
+            return ch.title.lowercased().contains(q)
+                || String(format: "%g", ch.number).contains(q)
+        }
+    }
 
     /// The source's web page. Prefers `publicUrl`, falls back to `url`. Only a
     /// valid absolute (http/https) URL is returned so the button stays hidden
@@ -1233,55 +1405,133 @@ private struct MangaDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                hero
-                if !details.manga.tags.isEmpty {
-                    tagsRow
+        GeometryReader { geo in
+            if geo.size.width >= 780 {
+                // Wide: proper two-column overview — cover/info on the left, the
+                // chapter overview filling the rest (like the web detail page).
+                HStack(alignment: .top, spacing: 0) {
+                    ScrollView { infoColumn.padding(20) }
+                        .frame(width: 340)
+                    Divider()
+                    ScrollView { chaptersSection.padding(20) }
+                        .frame(maxWidth: .infinity)
                 }
-                if !details.manga.description.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(details.manga.description)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                            .lineLimit(appState.readerPrefs.descriptionCollapse && !isExpanded ? 3 : nil)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if appState.readerPrefs.descriptionCollapse {
-                            Button {
-                                withAnimation {
-                                    isExpanded.toggle()
-                                }
-                            } label: {
-                                Text(isExpanded ? "Read less" : "Read more...")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(Color.appAccent)
-                            }
-                            .buttonStyle(.plain)
-                        }
+            } else {
+                // Narrow: single stacked column.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        hero
+                        if !details.manga.tags.isEmpty { tagsRow }
+                        descriptionBlock
+                        Divider().padding(.vertical, 4)
+                        chaptersSection
                     }
-                }
-                Divider().padding(.vertical, 4)
-
-                if appState.readerPrefs.pagesTab {
-                    Picker("", selection: $selectedTab) {
-                        Text("Chapters").tag(0)
-                        Text("Pages").tag(1)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .tint(Color.appAccent)
-                    .padding(.vertical, 4)
-                }
-
-                if !appState.readerPrefs.pagesTab || selectedTab == 0 {
-                    chaptersHeader
-                    chaptersList
-                } else {
-                    pagesView
+                    .padding(20)
                 }
             }
-            .padding(20)
+        }
+    }
+
+    /// Vertical hero for the wide layout: big cover, then title / meta / library
+    /// button / tags / description in one scrolling column.
+    @ViewBuilder
+    private var infoColumn: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cover
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(details.manga.title).font(.title3.bold()).lineLimit(4)
+                if let webURL {
+                    Button { appState.openInApp(webURL) } label: {
+                        Image(systemName: "globe").font(.subheadline.weight(.semibold)).foregroundStyle(Color.appAccent)
+                    }
+                    .buttonStyle(.plain).help("Open website")
+                }
+            }
+            if !details.manga.authors.isEmpty {
+                Label(details.manga.authors.joined(separator: ", "), systemImage: "person")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !details.manga.altTitles.isEmpty {
+                Text(details.manga.altTitles.prefix(2).joined(separator: " • "))
+                    .font(.caption).foregroundStyle(.tertiary).lineLimit(2)
+            }
+            HStack(spacing: 10) {
+                let rating = details.manga.rating
+                if rating > 0 {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill").font(.caption).foregroundStyle(.secondary)
+                }
+                Label("\(details.chapters.count) Chs", systemImage: "doc.text").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if details.manga.isNsfw {
+                    Text("18+").font(.caption.weight(.semibold)).foregroundStyle(.red)
+                }
+            }
+            .padding(.top, 2)
+
+            Button { Task { await appState.toggleDetailsFavourite() } } label: {
+                Label(
+                    appState.detailsIsFavourited ? "In Library" : "Add to Library",
+                    systemImage: appState.detailsIsFavourited ? "heart.fill" : "heart"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(appState.detailsIsFavourited ? Color.pink : Color.appAccent)
+            .padding(.top, 2)
+
+            if !details.manga.tags.isEmpty { tagsRow }
+            descriptionBlock
+        }
+    }
+
+    @ViewBuilder
+    private var descriptionBlock: some View {
+        if !details.manga.description.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                // HTMLText renders/strips the source's HTML (raw descriptions carry
+                // <p style=…>/<br>/<i> that plain Text would show verbatim).
+                HTMLText(html: details.manga.description)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(appState.readerPrefs.descriptionCollapse && !isExpanded ? 3 : nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                if appState.readerPrefs.descriptionCollapse {
+                    Button { withAnimation { isExpanded.toggle() } } label: {
+                        Text(isExpanded ? "Read less" : "Read more...")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(Color.appAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chaptersSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if appState.readerPrefs.pagesTab {
+                Picker("", selection: $selectedTab) {
+                    Text("Chapters").tag(0)
+                    Text("Pages").tag(1)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .tint(Color.appAccent)
+            }
+            if !appState.readerPrefs.pagesTab || selectedTab == 0 {
+                chaptersHeader
+                chaptersList
+            } else {
+                pagesView
+            }
         }
     }
 
@@ -1292,14 +1542,11 @@ private struct MangaDetailView: View {
             cover
                 .frame(minWidth: 104, idealWidth: 130, maxWidth: 160)
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.13), lineWidth: 0.75)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(0.35), radius: 14, y: 7)
-                .shadow(color: Color.appAccent.opacity(0.25), radius: 12)
-                .shadow(color: Color.appAccent.opacity(0.30), radius: 18)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1334,69 +1581,33 @@ private struct MangaDetailView: View {
                         .lineLimit(2)
                 }
 
-                HStack(spacing: 7) {
-                    // Rating badge — star with yellow glow
+                // Rating, chapter count and the NSFW marker survive as plain
+                // secondary text instead of three gradient badges.
+                HStack(spacing: 10) {
                     let rating = details.manga.rating
                     if rating > 0 {
-                        HStack(spacing: 4) {
-                            Text(String(format: "%.1f", rating))
-                                .font(.caption.bold())
-                                .foregroundStyle(.primary)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            LinearGradient(
-                                colors: [Color.yellow.opacity(0.20), Color.yellow.opacity(0.08)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .strokeBorder(Color.yellow.opacity(0.25), lineWidth: 0.5)
-                        )
+                        Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
-                    // Chapters count — accent badge (matches chaptersHeader)
-                    HStack(spacing: 4) {
-                        Image(systemName: "doc.text.fill")
-                            .font(.caption2)
-                        Text("\(details.chapters.count) Chs")
-                            .font(.caption.bold().monospacedDigit())
-                    }
-                    .foregroundStyle(Color.appAccent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.appAccent.opacity(0.22), Color.appAccent.opacity(0.08)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    )
+                    Label("\(details.chapters.count) Chs", systemImage: "doc.text")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
 
-                    // NSFW badge
                     if details.manga.isNsfw {
                         Text("18+")
-                            .font(.caption.bold())
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.red)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(Color.red.opacity(0.28), lineWidth: 0.5)
-                            )
+                            .accessibilityLabel("Adult content, 18 plus")
                     }
                 }
                 .padding(.top, 2)
 
                 Spacer(minLength: 4)
 
-                // Add-to-library button with gradient + spring scale hover
+                // Stock prominent button: the tint is the only accent, and the
+                // system picks the readable label colour for it.
                 Button {
                     Task { await appState.toggleDetailsFavourite() }
                 } label: {
@@ -1404,57 +1615,11 @@ private struct MangaDetailView: View {
                         appState.detailsIsFavourited ? "In Library" : "Add to Library",
                         systemImage: appState.detailsIsFavourited ? "heart.fill" : "heart"
                     )
-                    .font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(appState.detailsIsFavourited ? Color.pink : Color.appAccent)
-                .shadow(
-                    color: appState.detailsIsFavourited
-                        ? Color.pink.opacity(0.45)
-                        : Color.appAccent.opacity(isLibraryHovered ? 0.45 : 0.18),
-                    radius: 8, y: 3
-                )
-                .scaleEffect(isLibraryHovered ? 1.04 : 1.0)
-                .animation(.animeSpring, value: isLibraryHovered)
-                .animation(.animeSpring, value: appState.detailsIsFavourited)
-                .onHover { isLibraryHovered = $0 }
-                .overlay {
-                    if appState.detailsIsFavourited {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.pink.opacity(0.55), lineWidth: 2)
-                            .scaleEffect(libraryRingScale)
-                            .opacity(libraryRingScale > 1.0 ? (2.05 - libraryRingScale) : 0)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .overlay(alignment: .top) {
-                    if appState.detailsIsFavourited {
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.20), Color.clear],
-                            startPoint: .top,
-                            endPoint: .center
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .allowsHitTesting(false)
-                    }
-                }
-                .onChange(of: appState.detailsIsFavourited) { _, newValue in
-                    guard newValue else { return }
-                    libraryRingScale = 1.0
-                    withAnimation(.easeOut(duration: 0.45)) {
-                        libraryRingScale = 1.55
-                    }
-                }
             }
             Spacer(minLength: 0)
-        }
-        .background {
-            AsyncImage(url: URL(string: details.manga.coverUrl)) { phase in
-                if case .success(let img) = phase {
-                    img.resizable().scaledToFill()
-                        .blur(radius: 40).opacity(0.15).clipped()
-                }
-            }
         }
     }
 
@@ -1483,56 +1648,27 @@ private struct MangaDetailView: View {
         let visibleTags = showAllTags ? allTags : Array(allTags.prefix(tagLimit))
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                // Flat tag tokens — no gradient fill, no stroke.
                 ForEach(visibleTags, id: \.key) { tag in
                     Text(tag.title)
-                        .font(.caption.weight(.medium))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(
-                            LinearGradient(
-                                colors: [Color.primary.opacity(0.10), Color.primary.opacity(0.05)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                            Color.primary.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
                 }
 
                 if isTruncated {
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                            showAllTags = true
-                        }
-                    } label: {
-                        Text("Show all")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.appAccent)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(Color.appAccent.opacity(0.08),
-                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                    Button("Show all") { showAllTags = true }
+                        .buttonStyle(.link)
+                        .font(.caption)
                 } else if showAllTags && allTags.count > tagLimit {
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                            showAllTags = false
-                        }
-                    } label: {
-                        Text("Show less")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.appAccent)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(Color.appAccent.opacity(0.08),
-                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                    Button("Show less") { showAllTags = false }
+                        .buttonStyle(.link)
+                        .font(.caption)
                 }
             }
             .padding(.horizontal, 2)
@@ -1541,31 +1677,27 @@ private struct MangaDetailView: View {
 
     @ViewBuilder
     private var chaptersHeader: some View {
+        VStack(spacing: 8) {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("CHAPTERS")
-                .font(.caption.weight(.heavy))
-                .kerning(1.2)
+            Text("Chapters")
+                .font(.headline)
+
+            Text("\(details.chapters.count)")
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
 
             Spacer()
 
             if details.chapters.count > 1 {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { chaptersNewestFirst.toggle() }
+                    chaptersNewestFirst.toggle()
                 } label: {
                     Label(
                         chaptersNewestFirst ? "Newest" : "Oldest",
                         systemImage: chaptersNewestFirst ? "arrow.down" : "arrow.up"
                     )
-                    .font(.caption.weight(.semibold))
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(Color.appAccent)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(Color.appAccent.opacity(0.12), in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.appAccent.opacity(0.25), lineWidth: 0.5))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .help("Sort chapters newest- or oldest-first")
             }
 
@@ -1574,39 +1706,74 @@ private struct MangaDetailView: View {
                     showDownloadSheet = true
                 } label: {
                     Label("Download", systemImage: "arrow.down.circle")
-                        .font(.caption.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
-                        .foregroundStyle(Color.appAccent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 3)
-                        .background(Color.appAccent.opacity(0.12), in: Capsule())
-                        .overlay(Capsule().strokeBorder(Color.appAccent.opacity(0.25), lineWidth: 0.5))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .help("Download chapters — pick a range or select individually")
             }
-
-            Text("\(details.chapters.count)")
-                .font(.caption.bold().monospacedDigit())
-                .foregroundStyle(Color.appAccent)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.appAccent.opacity(0.12), in: Capsule())
-                .overlay(Capsule().strokeBorder(Color.appAccent.opacity(0.25), lineWidth: 0.5))
+        }
+        chaptersFilterBar
         }
         .padding(.bottom, 2)
+        .task { await appState.reloadDownloads() }
         .sheet(isPresented: $showDownloadSheet) {
             DownloadChaptersSheet(details: details, sourceId: appState.selectedSourceId ?? "")
                 .environmentObject(appState)
         }
     }
 
+    /// Web-style filter row: search, downloaded filter, scanlator filter, count.
+    private var chaptersFilterBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
+                TextField("Filter chapters…", text: $chapterSearch).textFieldStyle(.plain)
+                if !chapterSearch.isEmpty {
+                    Button { chapterSearch = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+            .frame(maxWidth: 260)
+
+            Picker("", selection: $chapterFilter) {
+                ForEach(ChapterFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+
+            if scanlators.count > 1 {
+                Menu {
+                    Button("All scanlators") { scanlatorFilter = nil }
+                    Divider()
+                    ForEach(scanlators, id: \.self) { s in Button(s) { scanlatorFilter = s } }
+                } label: {
+                    Label(scanlatorFilter ?? "Scanlator", systemImage: "person.2")
+                        .labelStyle(.titleAndIcon)
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+            }
+
+            Spacer()
+            Text("\(visibleChapters.count)")
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder
     private var chaptersList: some View {
-        let ordered = chaptersNewestFirst ? Array(details.chapters.reversed()) : details.chapters
+        let dl = downloadedChapterUrls
         LazyVStack(spacing: 5) {
-            ForEach(ordered) { chapter in
-                ChapterRow(chapter: chapter) { onChapter(chapter) }
+            if visibleChapters.isEmpty {
+                Text(chapterSearch.isEmpty ? "No chapters match this filter." : "No chapters match “\(chapterSearch)”.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 20)
+            } else {
+                ForEach(visibleChapters) { chapter in
+                    ChapterRow(chapter: chapter, downloaded: dl.contains(chapter.url)) { onChapter(chapter) }
+                }
             }
         }
     }
@@ -1616,10 +1783,8 @@ private struct MangaDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             // Header row
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("PAGE THUMBNAILS")
-                    .font(.caption.weight(.heavy))
-                    .kerning(1.2)
-                    .foregroundStyle(.secondary)
+                Text("Page Thumbnails")
+                    .font(.headline)
 
                 Spacer()
 
@@ -1636,13 +1801,6 @@ private struct MangaDetailView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 200)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-                    )
                 }
             }
             .padding(.bottom, 2)
@@ -1679,25 +1837,15 @@ private struct MangaDetailView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                                     )
-                                    .overlay(alignment: .bottom) {
-                                        LinearGradient(
-                                            colors: [Color.clear, Color.black.opacity(0.55)],
-                                            startPoint: .center,
-                                            endPoint: .bottom
-                                        )
-                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                    }
-                                    .shadow(color: .black.opacity(0.30), radius: 8, y: 4)
 
                                     Text("\(index + 1)")
-                                        .font(.caption2.monospacedDigit().weight(.medium))
+                                        .font(.caption2.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                 }
                             }
                             .buttonStyle(.plain)
-                            .animeEntrance(delay: Double(index) * 0.04)
                         }
                     }
                 }
@@ -1725,8 +1873,38 @@ private struct DownloadChaptersSheet: View {
     @State private var fromIdx: Int = 0
     @State private var toIdx: Int = 0
     @State private var submitting = false
+    @State private var searchText = ""
+    @State private var hideDownloaded = false
 
     private var chapters: [HelperChapter] { details.chapters }
+
+    /// Chapter URLs already fully downloaded vs still queued / in-progress.
+    private var downloadedUrls: Set<String> {
+        Set(appState.downloads.filter { $0.status == "COMPLETED" }.map(\.chapterUrl))
+    }
+    private var queuedUrls: Set<String> {
+        Set(appState.downloads
+            .filter { $0.status != "COMPLETED" && $0.status != "FAILED" && $0.status != "CANCELLED" }
+            .map(\.chapterUrl))
+    }
+    /// Chapters after the search filter + optional "hide downloaded".
+    private var visibleChapters: [HelperChapter] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        return chapters.filter { ch in
+            if hideDownloaded && downloadedUrls.contains(ch.url) { return false }
+            guard !q.isEmpty else { return true }
+            return ch.title.lowercased().contains(q)
+                || String(format: "%g", ch.number).contains(q)
+                || (ch.scanlator?.lowercased().contains(q) ?? false)
+        }
+    }
+    /// Visible chapters that can still be selected (i.e. not already downloaded).
+    private var selectableVisible: [HelperChapter] {
+        visibleChapters.filter { !downloadedUrls.contains($0.url) }
+    }
+    private func shortLabel(_ ch: HelperChapter) -> String {
+        ch.number > 0 ? "Ch \(String(format: "%g", ch.number))" : ch.title
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1751,23 +1929,44 @@ private struct DownloadChaptersSheet: View {
                 Spacer()
             } else {
                 VStack(spacing: 10) {
+                    // Search / filter — makes picking chapters in a long list easy.
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
+                        TextField("Filter by title, number or scanlator…", text: $searchText)
+                            .textFieldStyle(.plain)
+                        if !searchText.isEmpty {
+                            Button { searchText = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+
+                    // Range select — operates on what's currently visible.
                     HStack(spacing: 8) {
                         Text("Range").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Picker("", selection: $fromIdx) {
-                            ForEach(chapters.indices, id: \.self) { Text(chapters[$0].title).tag($0) }
+                            ForEach(visibleChapters.indices, id: \.self) { Text(shortLabel(visibleChapters[$0])).tag($0) }
                         }
                         .labelsHidden().frame(maxWidth: .infinity)
                         Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
                         Picker("", selection: $toIdx) {
-                            ForEach(chapters.indices, id: \.self) { Text(chapters[$0].title).tag($0) }
+                            ForEach(visibleChapters.indices, id: \.self) { Text(shortLabel(visibleChapters[$0])).tag($0) }
                         }
                         .labelsHidden().frame(maxWidth: .infinity)
                         Button("Select") { selectRange() }.buttonStyle(.bordered)
                     }
                     HStack(spacing: 8) {
-                        chip("All") { selected = Set(chapters.map(\.id)) }
+                        chip("All") { selected.formUnion(selectableVisible.map(\.id)) }
                         chip("None") { selected.removeAll() }
-                        chip("Invert") { selected = Set(chapters.map(\.id)).subtracting(selected) }
+                        chip("Invert") {
+                            let ids = Set(selectableVisible.map(\.id))
+                            selected = ids.symmetricDifference(selected).intersection(ids)
+                        }
+                        Toggle("Hide downloaded", isOn: $hideDownloaded)
+                            .toggleStyle(.checkbox).controlSize(.small)
                         Spacer()
                         Text("\(selected.count) selected")
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -1776,23 +1975,41 @@ private struct DownloadChaptersSheet: View {
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 Divider()
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(chapters) { ch in
-                            Button { toggle(ch.id) } label: {
+                if visibleChapters.isEmpty {
+                    Spacer()
+                    Text(searchText.isEmpty ? "No chapters" : "No chapters match “\(searchText)”")
+                        .foregroundStyle(.secondary).font(.callout)
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(visibleChapters) { ch in
+                            let done = downloadedUrls.contains(ch.url)
+                            let queued = queuedUrls.contains(ch.url)
+                            let picked = selected.contains(ch.id)
+                            Button { if !done { toggle(ch.id) } } label: {
                                 HStack(spacing: 10) {
-                                    Image(systemName: selected.contains(ch.id) ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(selected.contains(ch.id) ? Color.appAccent : .secondary)
-                                    Text(ch.title).font(.subheadline).lineLimit(1)
+                                    Image(systemName: (done || picked) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(done ? Color.green : (picked ? Color.appAccent : .secondary))
+                                    Text(ch.title).lineLimit(1)
+                                        .foregroundStyle(done ? .secondary : .primary)
                                     Spacer(minLength: 0)
+                                    if done {
+                                        Text("Downloaded").font(.caption2).foregroundStyle(.green)
+                                    } else if queued {
+                                        Text("Queued").font(.caption2).foregroundStyle(.orange)
+                                    }
                                 }
-                                .padding(.horizontal, 16).padding(.vertical, 7)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            Divider().opacity(0.25).padding(.leading, 42)
+                            .disabled(done)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                            .listRowSeparator(.hidden)
                         }
                     }
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
                 }
 
                 Divider()
@@ -1819,18 +2036,19 @@ private struct DownloadChaptersSheet: View {
             fromIdx = 0
             toIdx = max(0, chapters.count - 1)
         }
+        // Populate the downloaded/queued badges (best-effort).
+        .task { await appState.reloadDownloads() }
+        // Keep the range pickers valid as the filter changes the visible set.
+        .onChange(of: searchText) { _, _ in
+            fromIdx = 0
+            toIdx = max(0, visibleChapters.count - 1)
+        }
     }
 
     private func chip(_ label: String, _ action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-        } label: {
-            Text(label)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Color.primary.opacity(0.07), in: Capsule())
-        }
-        .buttonStyle(.plain)
+        Button(label, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
     }
 
     private func toggle(_ id: String) {
@@ -1838,9 +2056,13 @@ private struct DownloadChaptersSheet: View {
     }
 
     private func selectRange() {
-        guard !chapters.isEmpty else { return }
-        let lo = min(fromIdx, toIdx), hi = max(fromIdx, toIdx)
-        selected = Set(chapters[lo...hi].map(\.id))
+        let vis = visibleChapters
+        guard !vis.isEmpty else { return }
+        let n = vis.count - 1
+        let lo = max(0, min(min(fromIdx, toIdx), n))
+        let hi = max(0, min(max(fromIdx, toIdx), n))
+        // Add the range (skipping already-downloaded chapters) to the selection.
+        selected.formUnion(vis[lo...hi].filter { !downloadedUrls.contains($0.url) }.map(\.id))
     }
 
     private func submit() async {
@@ -1849,44 +2071,5 @@ private struct DownloadChaptersSheet: View {
         await appState.downloadChapters(sourceId: sourceId, manga: details.manga, chapters: chosen)
         submitting = false
         dismiss()
-    }
-}
-
-@MainActor
-private struct InstallButton: View {
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        ZStack {
-            Button("Get") {
-                action()
-            }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(Color.appAccent)
-
-            LinearGradient(
-                colors: [Color.appAccent.opacity(0.15), .clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .clipShape(Capsule())
-            .allowsHitTesting(false)
-        }
-        .fixedSize()
-        .scaleEffect(isHovered ? 1.06 : 1.0)
-        .animation(.spring(response: 0.25, dampingFraction: 0.70), value: isHovered)
-        .onHover { isHovered = $0 }
-    }
-}
-
-@MainActor
-private struct ShimmerRow: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.primary.opacity(0.04))
-            .shimmer()
-            .frame(height: 64)
     }
 }

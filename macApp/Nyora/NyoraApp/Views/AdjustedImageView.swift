@@ -1,5 +1,6 @@
 import SwiftUI
 import Cocoa
+import ImageIO
 
 /// Custom View that fetches an image from a URL or uses a pre-painted NSImage,
 /// applies hardware-accelerated Core Image adjustments on the GPU, and handles aspect ratios and scaling.
@@ -22,15 +23,21 @@ struct AdjustedImageView: View {
     var body: some View {
         Group {
             if let baseImage = paintedImage ?? originalImage {
-                let displayImage = adjustedImage ?? ColorFilterEngine.cachedResult(for: baseImage, adjustments: adjustments, cacheKey: url) ?? baseImage
+                // A painted/colorized image is transient and its adjusted form must
+                // NOT be read from the url-keyed cache (that holds the ORIGINAL page's
+                // adjusted result) — otherwise a translated/colorized page shows the
+                // stale original until the view is rebuilt.
+                let displayImage: NSImage = paintedImage != nil
+                    ? (adjustedImage ?? baseImage)
+                    : (adjustedImage ?? ColorFilterEngine.cachedResult(for: baseImage, adjustments: adjustments, cacheKey: url) ?? baseImage)
 
                 // Display using scaled layout
                 scaleImage(Image(nsImage: displayImage), size: baseImage.size)
                     .onChange(of: adjustments) { _, _ in
-                        scheduleAdjust(base: baseImage)
+                        scheduleAdjust(base: baseImage, cacheKey: paintedImage != nil ? nil : url)
                     }
                     .onAppear {
-                        scheduleAdjust(base: baseImage)
+                        scheduleAdjust(base: baseImage, cacheKey: paintedImage != nil ? nil : url)
                     }
             } else if isLoading {
                 if zoomMode == "fit_width" {
@@ -83,8 +90,16 @@ struct AdjustedImageView: View {
             }
         }
         .onChange(of: paintedImage) { _, newImage in
-            if let newImage = newImage {
+            // The translated/colorized image just arrived (or was cleared) — re-run
+            // the adjust pass on the new base so the reader updates LIVE on the
+            // current page instead of only after navigating away and back.
+            if let newImage {
                 onImageLoaded?(newImage.size)
+                scheduleAdjust(base: newImage, cacheKey: nil)
+            } else {
+                adjustTask?.cancel()
+                adjustedImage = nil
+                if let orig = originalImage { scheduleAdjust(base: orig, cacheKey: url) }
             }
         }
     }
@@ -133,21 +148,61 @@ struct AdjustedImageView: View {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 guard !Task.isCancelled, loadedUrl == urlString else { return }
-                if let img = NSImage(data: data) {
+                // FULL-resolution decode, but OFF the main thread. The reader's
+                // stall was the decode running on the main actor — not the
+                // resolution — so we keep every pixel and just move the work.
+                let cg = await Task.detached(priority: .userInitiated) {
+                    AdjustedImageView.fullResCGImage(from: data)
+                }.value
+                guard !Task.isCancelled, loadedUrl == urlString else { return }
+                if let cg {
+                    let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
                     originalImage = img
                     onImageLoaded?(img.size)
-                    scheduleAdjust(base: img)
+                    if paintedImage == nil { scheduleAdjust(base: img, cacheKey: urlString) }
                 } else { hasFailed = true }
             } catch { hasFailed = !Task.isCancelled }
             isLoading = false
         }
     }
 
-    private func scheduleAdjust(base: NSImage) {
+    /// Full-resolution decode via ImageIO, forced to fully materialize the pixels
+    /// off-thread (`kCGImageSourceShouldCacheImmediately`) so nothing is deferred
+    /// to a lazy main-thread decode at draw time. No downsampling — full quality.
+    /// `nonisolated static` so it can run on a detached (off-main) task.
+    nonisolated static func fullResCGImage(from data: Data) -> CGImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData,
+                                                    [kCGImageSourceShouldCache: true] as CFDictionary)
+        else { return NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil) }
+        let opts: [CFString: Any] = [
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        return CGImageSourceCreateImageAtIndex(src, 0, opts as CFDictionary)
+            ?? NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    /// Small downsampled decode — used ONLY for the tiny scrub-bar preview
+    /// thumbnail (rendered ~118×166), never for the page you actually read.
+    /// `nonisolated static` so it can run on a detached (off-main) task.
+    nonisolated static func downsampledCGImage(from data: Data, maxPixel: Int) -> CGImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData,
+                                                    [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+    }
+
+    private func scheduleAdjust(base: NSImage, cacheKey: String?) {
         adjustTask?.cancel()
         adjustedImage = nil
         adjustTask = Task {
-            let result = await ColorFilterEngine.apply(to: base, adjustments: adjustments, cacheKey: url)
+            let result = await ColorFilterEngine.apply(to: base, adjustments: adjustments, cacheKey: cacheKey)
             guard !Task.isCancelled else { return }
             adjustedImage = result
         }

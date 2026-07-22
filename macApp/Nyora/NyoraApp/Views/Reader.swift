@@ -19,6 +19,7 @@ import AppKit
 struct PagedReaderV2: View {
     let chapter: ChapterSummary
     let controlsVisible: Bool
+    var onToggleChrome: () -> Void = {}
 
     @EnvironmentObject var appState: AppState
 
@@ -26,6 +27,7 @@ struct PagedReaderV2: View {
     @State private var lastZoom: CGFloat = 1.0
     @State private var pan: CGSize = .zero
     @State private var lastPan: CGSize = .zero
+    @State private var autoTask: Task<Void, Never>? = nil
     @FocusState private var focused: Bool
 
     private let minZoom: CGFloat = 1.0
@@ -97,16 +99,15 @@ struct PagedReaderV2: View {
                     }
                 }
 
-                // Click zones — disabled when zoomed (so panning works)
+                // Tap layer — centre toggles chrome, edges page (see ClickZoneLayer).
+                // Disabled while zoomed so panning works.
                 if zoom <= 1.001 {
-                    ClickZoneLayer(geo: geo, onPrev: { goBack(isDouble: activeDouble) }, onNext: { goForward(isDouble: activeDouble) })
-                }
-
-                // Page counter — fades with controls
-                if appState.readerPrefs.showPageNumbers, !chapter.pages.isEmpty {
-                    pageCounter
-                        .opacity(controlsVisible ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.25), value: controlsVisible)
+                    ClickZoneLayer(
+                        geo: geo,
+                        onPrev: { goBack(isDouble: activeDouble) },
+                        onNext: { goForward(isDouble: activeDouble) },
+                        onToggle: onToggleChrome
+                    )
                 }
             }
         }
@@ -149,6 +150,32 @@ struct PagedReaderV2: View {
         .onKeyPress(.init("+")) { setZoom(min(zoom * 1.25, maxZoom)); return .handled }
         .onKeyPress(.init("=")) { setZoom(min(zoom * 1.25, maxZoom)); return .handled }
         .onKeyPress(.init("-")) { setZoom(max(zoom / 1.25, minZoom)); return .handled }
+        .onKeyPress(.init("a")) { appState.toggleAutoScroll(); return .handled }
+        .onChange(of: appState.autoScrollOn) { _, on in on ? startAutoScroll() : stopAutoScroll() }
+        .onDisappear { stopAutoScroll() }
+    }
+
+    // MARK: Auto-advance (paged)
+    /// Web-style paged auto-scroll: flip forward every `autoScrollPagedDelay`
+    /// seconds; goForward already rolls into the next chapter at the last page.
+    private func startAutoScroll() {
+        autoTask?.cancel()
+        autoTask = Task {
+            while !Task.isCancelled && appState.autoScrollOn {
+                let delay = appState.autoScrollPagedDelay
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled, appState.autoScrollOn else { return }
+                if appState.readerPageIndex >= chapter.pages.count - 1, !appState.hasNextChapter {
+                    appState.autoScrollOn = false
+                    return
+                }
+                goForward(isDouble: isDouble)
+            }
+        }
+    }
+    private func stopAutoScroll() {
+        autoTask?.cancel()
+        autoTask = nil
     }
 
     @ViewBuilder
@@ -159,32 +186,6 @@ struct PagedReaderV2: View {
                 .allowsHitTesting(false)
         }
         .frame(width: width, height: height)
-    }
-
-    // MARK: Page counter
-
-    private var pageCounter: some View {
-        VStack {
-            Spacer()
-            // Seekbar + page counter are sibling floating glass shapes: cluster
-            // them in a single GlassEffectContainer so they blend/morph together
-            // instead of double-frosting. ReaderSeekbar already carries its own
-            // .glassEffect (from GlassStyles), so we add NO per-child glass here.
-            GlassEffectContainer(spacing: 8) {
-                ReaderSeekbar(
-                    page: Binding(
-                        get: { appState.readerPageIndex },
-                        set: { idx in
-                            appState.readerPageIndex = idx
-                            Task { await appState.persistReaderPosition() }
-                        }
-                    ),
-                    pageCount: chapter.pages.count,
-                    rtl: isRTL
-                )
-            }
-            .padding(.bottom, 18)
-        }
     }
 
     // MARK: Gestures
@@ -219,17 +220,25 @@ struct PagedReaderV2: View {
     private func goBack(isDouble: Bool = false) {
         let step = isDouble ? 2 : 1
         let target = pageIndex - step
-        guard target >= 0 else { return }
-        appState.readerPageIndex = target
-        Task { await appState.persistReaderPosition() }
+        if target >= 0 {
+            appState.readerPageIndex = target
+            Task { await appState.persistReaderPosition() }
+        } else if appState.hasPrevChapter {
+            // Before the first page → continue into the previous chapter.
+            Task { await appState.gotoChapterRelative(-1) }
+        }
     }
 
     private func goForward(isDouble: Bool = false) {
         let step = isDouble ? 2 : 1
         let target = pageIndex + step
-        guard target < chapter.pages.count else { return }
-        appState.readerPageIndex = target
-        Task { await appState.persistReaderPosition() }
+        if target < chapter.pages.count {
+            appState.readerPageIndex = target
+            Task { await appState.persistReaderPosition() }
+        } else if appState.hasNextChapter {
+            // Past the last page → continue straight into the next chapter.
+            Task { await appState.gotoChapterRelative(1) }
+        }
     }
 
     private func jumpTo(_ target: Int) {
@@ -277,10 +286,20 @@ private struct PageImageWithOverlay: View {
     let containerSize: CGSize
 
     private var paintedImage: NSImage? {
+        // Prefer the live chapter-translator image FIRST: it's re-baked onto the
+        // colorized page when colorization finishes (translate + colorize compose),
+        // whereas `paintedPageImage` is a one-shot mirror that wouldn't update.
+        if let painted = appState.chapterTranslator.paintedImages[pageIndex] {
+            return painted
+        }
         if let painted = appState.paintedPageImage, appState.paintedPageURL == url {
             return painted
         }
-        return appState.chapterTranslator.paintedImages[pageIndex]
+        // Colorize-only: show the colorized page as it finishes.
+        if appState.colorizeModeOn {
+            return appState.colorizer.colorizedImages[pageIndex]
+        }
+        return nil
     }
 
     var body: some View {
@@ -301,32 +320,27 @@ private struct ClickZoneLayer: View {
     @EnvironmentObject var appState: AppState
     let onPrev: () -> Void
     let onNext: () -> Void
+    let onToggle: () -> Void
 
     var body: some View {
-        let isLTR = appState.readerPrefs.readerTapsLtr || !appState.rtlReading
-        let inverted = appState.readerPrefs.invertNavigation
-        
-        // Effective LTR/RTL for the zones
-        let effectiveRTL = !isLTR
-        
+        // Apple Books: tap the CENTRE to toggle chrome; tap the outer thirds to
+        // page (direction follows readerMode.isRTL). If tap-zones are disabled,
+        // a tap anywhere just toggles the chrome.
+        let rtl = appState.readerMode.isRTL
+        let taps = appState.readerPrefs.tapZonesEnabled
         HStack(spacing: 0) {
             Color.clear
-                .frame(width: geo.size.width * 0.25)
+                .frame(width: geo.size.width * 0.30)
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    let moveNext = effectiveRTL ? !inverted : inverted
-                    moveNext ? onNext() : onPrev()
-                }
+                .onTapGesture { taps ? (rtl ? onNext() : onPrev()) : onToggle() }
             Color.clear
-                .frame(width: geo.size.width * 0.50)
-                .allowsHitTesting(false)
-            Color.clear
-                .frame(width: geo.size.width * 0.25)
+                .frame(width: geo.size.width * 0.40)
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    let moveNext = effectiveRTL ? inverted : !inverted
-                    moveNext ? onNext() : onPrev()
-                }
+                .onTapGesture { onToggle() }
+            Color.clear
+                .frame(width: geo.size.width * 0.30)
+                .contentShape(Rectangle())
+                .onTapGesture { taps ? (rtl ? onPrev() : onNext()) : onToggle() }
         }
     }
 }
@@ -430,11 +444,21 @@ private struct BalloonViewV2: View {
 struct WebtoonReaderV2: View {
     let chapter: ChapterSummary
     let controlsVisible: Bool
+    var onToggleChrome: () -> Void = {}
 
     @EnvironmentObject var appState: AppState
     @FocusState private var focused: Bool
     @State private var visiblePage: Int = 0
     @State private var pendingPersist: Task<Void, Never>? = nil
+    @State private var advancedToNext = false
+    // Auto-scroll (continuous, web-style)
+    @State private var scrollPosition = ScrollPosition(edge: .top)
+    @State private var scrollY: CGFloat = 0
+    @State private var maxScrollY: CGFloat = 0
+    @State private var autoTask: Task<Void, Never>? = nil
+
+    /// Snapshot of scroll offset + travel, tracked via onScrollGeometryChange.
+    private struct AutoGeo: Equatable { var y: CGFloat; var maxY: CGFloat }
 
     var body: some View {
         GeometryReader { geo in
@@ -467,11 +491,39 @@ struct WebtoonReaderV2: View {
                                     }
                                 }
                             }
+                            // Scrolling to the end flows straight into the next chapter.
+                            if appState.hasNextChapter {
+                                VStack(spacing: 10) {
+                                    ProgressView().tint(.white)
+                                    Text("Loading next chapter…")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 200)
+                                .onAppear {
+                                    guard !advancedToNext, visiblePage >= chapter.pages.count - 1 else { return }
+                                    advancedToNext = true
+                                    Task { await appState.gotoChapterRelative(1) }
+                                }
+                            }
                         }
                         .frame(width: geo.size.width)
                     }
                     .scrollIndicators(.hidden)
                     .background(Color.black)
+                    .scrollPosition($scrollPosition)
+                    .onScrollGeometryChange(for: AutoGeo.self) { geo in
+                        AutoGeo(y: geo.contentOffset.y,
+                                maxY: max(0, geo.contentSize.height - geo.containerSize.height))
+                    } action: { _, g in
+                        scrollY = g.y
+                        maxScrollY = g.maxY
+                    }
+                    // Fresh scroll view per chapter — otherwise the old scroll offset
+                    // carries over and the page onAppear snaps you to the middle.
+                    .id(chapter.id)
+                    .onChange(of: appState.autoScrollOn) { _, on in
+                        on ? startAutoScroll() : stopAutoScroll()
+                    }
                     .onAppear {
                         // Jump to saved position
                         if appState.readerPageIndex > 0 {
@@ -481,37 +533,38 @@ struct WebtoonReaderV2: View {
                         }
                     }
                     .onChange(of: appState.readerPageIndex) { old, new in
-                        // External page-change requests (seekbar, keyboard) → scroll
+                        // External page-change requests (scrubber, keyboard) → INSTANT
+                        // jump. No animation: an animated scrollTo flies through every
+                        // intermediate page (decoding each) instead of landing directly.
                         if new != visiblePage {
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                proxy.scrollTo(new, anchor: .top)
-                            }
+                            proxy.scrollTo(new, anchor: .top)
                             visiblePage = new
                         }
                     }
-                }
-
-                if appState.readerPrefs.showPageNumbers, !chapter.pages.isEmpty {
-                    ReaderSeekbar(
-                        page: Binding(
-                            get: { visiblePage },
-                            set: { new in
-                                visiblePage = new
-                                appState.readerPageIndex = new
-                            }
-                        ),
-                        pageCount: chapter.pages.count
-                    )
-                    .padding(.bottom, 14)
-                    .opacity(controlsVisible ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.25), value: controlsVisible)
+                    // Tap anywhere on the strip toggles the floating chrome.
+                    .simultaneousGesture(TapGesture().onEnded { onToggleChrome() })
                 }
             }
         }
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
-        .onAppear { focused = true }
+        .onAppear { focused = true; if appState.autoScrollOn { startAutoScroll() } }
+        .onDisappear { stopAutoScroll() }
+        // New chapter loaded — re-arm the end-of-chapter auto-continue and, if
+        // auto-scroll is still on, restart the loop from the top of the new chapter.
+        .onChange(of: chapter.id) { _, _ in
+            advancedToNext = false
+            visiblePage = 0
+            if appState.autoScrollOn {
+                // Wait for the fresh scroll view (.id(chapter.id)) to settle at top.
+                autoTask?.cancel()
+                autoTask = Task {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if appState.autoScrollOn { startAutoScroll() }
+                }
+            }
+        }
         // Keyboard: arrows / space scroll by page-jump
         .onKeyPress(.upArrow)   { jumpRelative(-1); return .handled }
         .onKeyPress(.downArrow) { jumpRelative(+1); return .handled }
@@ -525,11 +578,54 @@ struct WebtoonReaderV2: View {
         .onKeyPress(.end)  { jumpAbsolute(chapter.pages.count - 1); return .handled }
         .onKeyPress(.init("n")) { Task { await appState.gotoChapterRelative(+1) }; return .handled }
         .onKeyPress(.init("p")) { Task { await appState.gotoChapterRelative(-1) }; return .handled }
+        .onKeyPress(.init("a")) { appState.toggleAutoScroll(); return .handled }
+    }
+
+    // MARK: Continuous auto-scroll
+    /// Web-style continuous scroll: nudge the offset every frame by
+    /// (px/sec ÷ 60). Reaching the bottom of the LAST page rolls into the next
+    /// chapter (auto stays on and restarts); otherwise it stops at the very end.
+    private func startAutoScroll() {
+        autoTask?.cancel()
+        autoTask = Task {
+            var y = scrollY
+            while !Task.isCancelled && appState.autoScrollOn {
+                let step = appState.autoScrollPxPerSec / 60.0
+                y += step
+                scrollPosition.scrollTo(y: y)
+                // End only when we're truly at the bottom AND the last page is the
+                // visible one — guards against lazy rows briefly underreporting the
+                // content height (which would otherwise skip a chapter).
+                let atBottom = maxScrollY > 0 && y >= maxScrollY - 1
+                let onLastPage = visiblePage >= chapter.pages.count - 1
+                if atBottom && onLastPage {
+                    if appState.hasNextChapter {
+                        await appState.gotoChapterRelative(1)   // onChange(chapter.id) restarts
+                    } else {
+                        appState.autoScrollOn = false
+                    }
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 16_000_000)   // ~60fps
+            }
+        }
+    }
+    private func stopAutoScroll() {
+        autoTask?.cancel()
+        autoTask = nil
     }
 
     private func jumpRelative(_ delta: Int) {
-        let target = max(0, min(chapter.pages.count - 1, appState.readerPageIndex + delta))
-        appState.readerPageIndex = target
+        let target = appState.readerPageIndex + delta
+        if target < 0 {
+            // Before the first page → previous chapter.
+            if appState.hasPrevChapter { Task { await appState.gotoChapterRelative(-1) } }
+        } else if target >= chapter.pages.count {
+            // Past the last page → next chapter.
+            if appState.hasNextChapter { Task { await appState.gotoChapterRelative(1) } }
+        } else {
+            appState.readerPageIndex = target
+        }
     }
     private func jumpAbsolute(_ target: Int) {
         let clamped = max(0, min(chapter.pages.count - 1, target))
@@ -558,10 +654,20 @@ private struct WebtoonPageV2: View {
     @State private var loadedPxSize: CGSize = .zero
 
     private var paintedImage: NSImage? {
+        // Prefer the live chapter-translator image FIRST: it's re-baked onto the
+        // colorized page when colorization finishes (translate + colorize compose),
+        // whereas `paintedPageImage` is a one-shot mirror that wouldn't update.
+        if let painted = appState.chapterTranslator.paintedImages[pageIndex] {
+            return painted
+        }
         if let painted = appState.paintedPageImage, appState.paintedPageURL == url {
             return painted
         }
-        return appState.chapterTranslator.paintedImages[pageIndex]
+        // Colorize-only: show the colorized page as it finishes.
+        if appState.colorizeModeOn {
+            return appState.colorizer.colorizedImages[pageIndex]
+        }
+        return nil
     }
 
     var body: some View {
@@ -623,6 +729,133 @@ private struct WebtoonPageOverlay: View {
                         )
                 }
             }
+        }
+    }
+}
+
+// MARK: - Immersive scrubber (Apple Books style)
+
+/// Floating bottom scrubber: a page slider with a live thumbnail preview of the
+/// target page while dragging (like Apple Books). RTL-aware. Binds directly to
+/// the reader's page index and works in both paged and webtoon modes.
+struct ReaderScrubBar: View {
+    let urls: [String]
+    @Binding var page: Int
+    var rtl: Bool = false
+
+    @State private var scrubbing = false
+    @State private var preview = 0            // numeric label + drag-end commit (instant)
+    @State private var previewImageIndex = 0  // debounced — drives the thumbnail load
+    @State private var thumb: NSImage?
+    @State private var thumbTask: Task<Void, Never>?
+    @State private var debounceTask: Task<Void, Never>?
+
+    /// Tiny downsampled thumbnails, cached so re-scrubbing the same pages is free.
+    nonisolated(unsafe) private static let thumbCache = NSCache<NSString, NSImage>()
+
+    var body: some View {
+        let count = max(urls.count, 1)
+        let binding = Binding<Double>(
+            get: { Double(scrubbing ? preview : page) },
+            set: { v in
+                let clamped = max(0, min(count - 1, Int(v.rounded())))
+                guard clamped != preview else { return }
+                preview = clamped
+                // Debounce the *thumbnail* so a fast multi-page drag only decodes
+                // the frame you land on — the numeric label above stays instant.
+                debounceTask?.cancel()
+                debounceTask = Task {
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    if !Task.isCancelled { previewImageIndex = clamped }
+                }
+            }
+        )
+        VStack(spacing: 10) {
+            if scrubbing { thumbnailPreview(index: preview, count: count) }
+            HStack(spacing: 12) {
+                Text("\(preview + 1)")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .frame(minWidth: 30, alignment: .trailing)
+                sliderView(binding, upper: Double(count - 1))
+                    .frame(maxWidth: 460)
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 30, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.10)))
+        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
+        .onChange(of: page) { _, p in if !scrubbing { preview = p } }
+        .onChange(of: previewImageIndex) { _, i in loadThumb(index: i) }
+        .onAppear { preview = page; previewImageIndex = page }
+        .onDisappear { thumbTask?.cancel(); debounceTask?.cancel() }
+        .animation(.easeOut(duration: 0.18), value: scrubbing)
+    }
+
+    @ViewBuilder
+    private func sliderView(_ b: Binding<Double>, upper: Double) -> some View {
+        let s = Slider(value: b, in: 0...max(upper, 0.0001), step: 1) { editing in
+            if editing {
+                scrubbing = true
+                loadThumb(index: preview)   // warm the current frame immediately
+            } else {
+                scrubbing = false
+                debounceTask?.cancel()
+                page = preview          // commit the page only when the drag ends
+            }
+        }
+        if rtl {
+            // SwiftUI Slider can't flip natively — mirror it so drag-left advances.
+            s.scaleEffect(x: -1, y: 1, anchor: .center)
+        } else {
+            s
+        }
+    }
+
+    /// Fetch + downsample the target page OFF the main thread, cache it, and show
+    /// it only if it's still the frame the user is on. Replaces the old
+    /// AsyncImage(url:) which decoded the full ~2000px page lazily on main and
+    /// rebuilt with a fresh identity on every drag tick.
+    private func loadThumb(index: Int) {
+        guard let str = urls[safe: index], let url = URL(string: str) else { thumb = nil; return }
+        let key = str as NSString
+        if let cached = ReaderScrubBar.thumbCache.object(forKey: key) { thumb = cached; return }
+        thumbTask?.cancel()
+        thumb = nil
+        thumbTask = Task {
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return }
+            guard !Task.isCancelled else { return }
+            let img = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                guard let cg = AdjustedImageView.downsampledCGImage(from: data, maxPixel: 240) else { return nil }
+                return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            }.value
+            guard !Task.isCancelled, let img else { return }
+            ReaderScrubBar.thumbCache.setObject(img, forKey: key)
+            // Only publish if the user is still parked on this frame.
+            if preview == index || previewImageIndex == index { thumb = img }
+        }
+    }
+
+    @ViewBuilder
+    private func thumbnailPreview(index: Int, count: Int) -> some View {
+        VStack(spacing: 6) {
+            Group {
+                if let thumb {
+                    Image(nsImage: thumb).resizable().scaledToFit()
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+            .frame(width: 118, height: 166)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(0.14)))
+            Text("\(index + 1) / \(count)")
+                .font(.caption2.monospacedDigit().weight(.medium))
+                .foregroundStyle(.secondary)
         }
     }
 }

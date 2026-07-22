@@ -24,6 +24,8 @@ final class ReaderPrefs: ObservableObject {
             wallpaperHex: wallpaperAccentHex,
             dark: Self.isDarkAppearance(appAppearance)
         )
+        // Seed the live glass-mode holder so the window paints correctly at launch.
+        NyoraTheme.glassMode = glassMode
     }
 
     // MARK: - General
@@ -50,6 +52,12 @@ final class ReaderPrefs: ObservableObject {
     }
 
     // MARK: - Appearance
+    /// Native macOS glass/vibrancy for window + panes (the "Apple look"). Off by
+    /// default = flat opaque background. Mirrored into `NyoraTheme.glassMode` so
+    /// `windowGlassBackground` / `WindowGlass` react live.
+    @Published var glassMode: Bool = UserDefaults.standard.bool(forKey: Keys.glassMode) {
+        didSet { ud.set(glassMode, forKey: Keys.glassMode); NyoraTheme.glassMode = glassMode }
+    }
     @Published var appAppearance: String = UserDefaults.standard.string(forKey: Keys.appAppearance) ?? "auto" {
         didSet {
             ud.set(appAppearance, forKey: Keys.appAppearance)
@@ -180,6 +188,11 @@ final class ReaderPrefs: ObservableObject {
     @Published var autoScrollSecondsPerPage: Double = (UserDefaults.standard.object(forKey: Keys.autoScroll) as? Double) ?? 0 {
         didSet { ud.set(autoScrollSecondsPerPage, forKey: Keys.autoScroll) }
     }
+    /// Auto-scroll speed 1–10 (matches the web reader). Webtoon: px/sec;
+    /// paged: seconds-per-page. Default 4.
+    @Published var autoScrollLevel: Int = (UserDefaults.standard.object(forKey: Keys.autoScrollLevel) as? Int) ?? 4 {
+        didSet { ud.set(min(10, max(1, autoScrollLevel)), forKey: Keys.autoScrollLevel) }
+    }
     @Published var twoPageLayout: Bool = (UserDefaults.standard.object(forKey: Keys.twoPage) as? Bool) ?? false {
         didSet { ud.set(twoPageLayout, forKey: Keys.twoPage) }
     }
@@ -278,18 +291,10 @@ final class ReaderPrefs: ObservableObject {
     @Published var translationResponseScale: Double = (UserDefaults.standard.object(forKey: Keys.translationResponseScale) as? Double) ?? 1.0 {
         didSet { ud.set(translationResponseScale, forKey: Keys.translationResponseScale) }
     }
-    /// High-level Speed-vs-Quality preset. See `OcrProvider.Tier` for what
-    /// each setting changes (config grid size, dHash threshold, whether the
-    /// Apple Intelligence polish step runs after MT).
-    @Published var translationTier: OcrProvider.Tier = {
-        let raw = UserDefaults.standard.string(forKey: Keys.translationTier) ?? OcrProvider.Tier.quality.rawValue
-        return OcrProvider.Tier(rawValue: raw) ?? .quality
-    }() {
-        didSet { ud.set(translationTier.rawValue, forKey: Keys.translationTier) }
-    }
-    /// On/off switch for the post-MT Apple Intelligence polish step.
-    /// Independent of the speed tier — any tier can run with polish on or off.
-    /// Default ON because polish is the main quality differentiator.
+    /// Master switch for on-device Apple Intelligence translation (the native
+    /// pipeline mirrors the web worker — no speed/quality "modes"). ON ⇒ the
+    /// Foundation Models LLM translates each bubble, Google fills refusals.
+    /// OFF ⇒ Google Translate only. Default ON.
     @Published var applePolish: Bool = (UserDefaults.standard.object(forKey: Keys.applePolish) as? Bool) ?? true {
         didSet { ud.set(applePolish, forKey: Keys.applePolish) }
     }
@@ -363,20 +368,6 @@ final class ReaderPrefs: ObservableObject {
         return stored
     }
 
-    /// Snapshot the five OCR-pipeline toggles into the value type the
-    /// `OcrProvider` actor consumes. Computed each call so the user's latest
-    /// settings always win.
-    var ocrPipelineConfig: OcrProvider.PipelineConfig {
-        OcrProvider.PipelineConfig(
-            adaptiveUpscale: aiAdaptiveUpscale,
-            medianDenoise: aiMedianDenoise,
-            histogramStretch: aiHistogramStretch,
-            inversionPass: aiInversionPass,
-            rotationPass: aiRotationPass,
-            tier: translationTier,
-            applePolish: applePolish
-        )
-    }
 
     // MARK: - Accent / Color scheme
 
@@ -542,6 +533,7 @@ final class ReaderPrefs: ObservableObject {
         static let exitConfirm      = "nyora.app.exitConfirm"
         
         static let appAppearance    = "nyora.app.appearance"
+        static let glassMode        = "nyora.app.glassMode"
         static let accentColor      = "nyora.app.accentColor"
         static let customAccentHex  = "nyora.app.customAccentHex"
         static let wallpaperAccentHex = "nyora.app.wallpaperAccentHex"
@@ -581,6 +573,7 @@ final class ReaderPrefs: ObservableObject {
         static let readerOptimize   = "nyora.reader.optimize"
         static let readerCrop       = "nyora.reader.crop"
         static let autoScroll       = "nyora.reader.autoScroll"
+        static let autoScrollLevel  = "nyora.reader.autoScrollLevel"
         static let twoPage          = "nyora.reader.twoPage"
         static let autoHide         = "nyora.reader.autoHide"
         static let tapZones         = "nyora.reader.tapZones"

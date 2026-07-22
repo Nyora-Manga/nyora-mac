@@ -60,8 +60,13 @@ struct NyoraApp: App {
                 }
         }
         .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified(showsTitle: true))
-        .windowResizability(.contentSize)
+        // The system title is hidden so RootView can draw its own accent-coloured pane
+        // title in the toolbar (macOS gives no way to recolour the built-in title text).
+        .windowToolbarStyle(.unified(showsTitle: false))
+        // .contentMinSize (not .contentSize): the window must be free to grow to
+        // fill the display in macOS full-screen / zoom. .contentSize pins it to the
+        // ideal content size, which is what made full-screen misbehave.
+        .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)
         .commands {
             CommandGroup(after: .newItem) {

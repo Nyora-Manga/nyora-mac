@@ -11,7 +11,7 @@ import AppKit
 //  RootView reads to decide whether to present this view):
 //
 //    Layer 1 (WelcomeView)      — monochrome editorial hero + auth: Sign in /
-//                                 Create account (existing Supabase auth),
+//                                 Create account (existing NyoraSync auth),
 //                                 Restore from backup, and Continue as guest.
 //                                 Everyone proceeds to Layer 2.
 //    Layer 2 (PreferencesOnboardingView) — fetch the source catalog, offer a
@@ -162,7 +162,7 @@ struct WelcomeView: View {
 
             if let status = appState.statusMessage {
                 HStack(spacing: 8) {
-                    if appState.isSupabaseSyncing || appState.isSupabaseSigningIn {
+                    if appState.isNyoraSyncing || appState.isNyoraSyncSigningIn {
                         ProgressView().controlSize(.small)
                     }
                     Text(status)
@@ -178,7 +178,7 @@ struct WelcomeView: View {
     // MARK: Landing
 
     private var landingButtons: some View {
-        let isBusy = appState.isSupabaseSigningIn || appState.isSupabaseSyncing
+        let isBusy = appState.isNyoraSyncSigningIn || appState.isNyoraSyncing
         return VStack(spacing: 12) {
             primaryButton(title: "Sign in") { switchTo(.signIn) }
             secondaryButton(title: "Create account") { switchTo(.signUp) }
@@ -208,7 +208,7 @@ struct WelcomeView: View {
     // MARK: Auth form
 
     private var authForm: some View {
-        let isBusy = appState.isSupabaseSigningIn || appState.isSupabaseSyncing
+        let isBusy = appState.isNyoraSyncSigningIn || appState.isNyoraSyncing
         return VStack(alignment: .leading, spacing: 18) {
             Text(mode == .signUp ? "Create account" : "Welcome back")
                 .font(.onboard(26, weight: .bold))
@@ -311,7 +311,7 @@ struct WelcomeView: View {
     private enum SignInMode { case merge, replace }
 
     private func signIn(register: Bool) {
-        guard !appState.isSupabaseSigningIn else { return }
+        guard !appState.isNyoraSyncSigningIn else { return }
         let em = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !em.isEmpty, !password.isEmpty else {
             appState.statusMessage = "Enter your email and password"
@@ -319,14 +319,14 @@ struct WelcomeView: View {
         }
         Task {
             let ok = register
-                ? await appState.supabaseRegister(email: em, password: password)
-                : await appState.supabaseSignIn(email: em, password: password)
+                ? await appState.nyoraSyncRegister(email: em, password: password)
+                : await appState.nyoraSyncSignIn(email: em, password: password)
             guard ok else { return }
             password = ""
-            if await appState.supabaseHasLocalData() {
+            if await appState.nyoraSyncHasLocalData() {
                 showConflictDialog = true   // already authed; ask merge vs replace
             } else {
-                await appState.supabaseSync()
+                await appState.nyoraSync()
                 enterPreferences()
             }
         }
@@ -335,9 +335,9 @@ struct WelcomeView: View {
     private func confirmSignIn(mode: SignInMode) {
         Task {
             if mode == .replace {
-                await appState.supabaseRestoreFromCloud()
+                await appState.nyoraSyncRestoreFromCloud()
             } else {
-                await appState.supabaseSync()
+                await appState.nyoraSync()
             }
             enterPreferences()
         }

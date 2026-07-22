@@ -6,6 +6,29 @@ struct RootView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedDestination: NavDestination = .history
     @State private var isUnlocked: Bool = false
+    /// Collapse the sidebar in the immersive reader (Apple Books full-bleed).
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+
+    /// The accent wash for the glass, from the chosen colour scheme. The Dynamic
+    /// (`wallpaper`) scheme is deliberately left un-tinted — it derives from the desktop
+    /// that already shows through the glass, so tinting it would muddy that.
+    private var glassTint: Color? {
+        appState.readerPrefs.accentColor == "wallpaper"
+            ? nil
+            : appState.readerPrefs.effectiveAccentColor
+    }
+
+    /// The pane header. Explore shows the active source's name + engine/language line
+    /// (it used to set these via navigationTitle/subtitle); every other pane is just its
+    /// destination title. Centralised here so one accent-styled toolbar item covers all.
+    private var paneTitle: (title: String, subtitle: String?) {
+        if selectedDestination == .explore,
+           let sid = appState.selectedSourceId,
+           let source = appState.sources.first(where: { $0.id == sid }) {
+            return (source.name, "\(source.engine) · \(source.lang.uppercased())")
+        }
+        return (selectedDestination.title, nil)
+    }
 
     var body: some View {
         ZStack {
@@ -16,7 +39,7 @@ struct RootView: View {
                         removal: .opacity.combined(with: .move(edge: .top))
                     ))
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     // In reader mode the left panel becomes the page-thumbnail
                     // strip. ReaderSidebar renders its own empty state when no
                     // chapter is open, so we DON'T also require an active chapter
@@ -24,27 +47,19 @@ struct RootView: View {
                     // launch.
                     Group {
                         if selectedDestination == .reader,
-                           let chapter = appState.activeChapter,
-                           !chapter.pages.isEmpty {
-                            ReaderSidebar()
-                                .toolbar {
-                                    // Tiny "back to navigation" button so the user
-                                    // isn't trapped in reader mode.
-                                    ToolbarItem(placement: .navigation) {
-                                        Button {
-                                            selectedDestination = .history
-                                        } label: {
-                                            Label("Back to Library", systemImage: "chevron.left")
-                                                .labelStyle(.titleAndIcon)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        .help("Back to navigation")
-                                    }
-                                }
+                           appState.activeChapter?.pages.isEmpty == false {
+                            // Immersive reader — sidebar is collapsed (columnVisibility
+                            // .detailOnly). Render NOTHING so the page-thumbnail strip
+                            // never loads (each thumb was decoding a full-res image).
+                            Color.clear
                         } else {
                             SidebarView(selection: $selectedDestination)
                         }
+                    }
+                    // Glass mode: paint NOTHING so the native macOS sidebar vibrancy
+                    // (Tahoe glass) shows on the LEFT pane too. Flat mode: solid black/white.
+                    .background {
+                        if !NyoraTheme.glassMode { Color.appBackground.ignoresSafeArea() }
                     }
                     .navigationSplitViewColumnWidth(
                         min: 200,
@@ -53,17 +68,45 @@ struct RootView: View {
                     )
                 } detail: {
                     DetailContainerView(destination: selectedDestination)
-                        // Apple-strict: the content pane stays OPAQUE & legible.
-                        // Glass belongs on the chrome (auto-glass sidebar/toolbar)
-                        // and on floating surfaces WITHIN each page (cards, section
-                        // panels) — not on the pane background, and never fully
-                        // see-through.
-                        .background(Color.appBackground.ignoresSafeArea())
+                        // macOS 26 "glass everywhere": the content pane is native window
+                        // vibrancy, so the desktop blurs through behind it like Finder.
+                        // The lists inside hide their own scroll background (see each
+                        // pane) so this shows through rather than being covered.
+                        .windowGlassBackground(tint: glassTint)
                         .navigationSplitViewColumnWidth(min: 480, ideal: 900)
                 }
             }
         }
         .navigationTitle(selectedDestination.title)
+        // The pane title is drawn here, accent-coloured to mirror the sidebar's selected
+        // item, because the system toolbar title can't be recoloured (system title is
+        // hidden via .unified(showsTitle: false)). This is also why the header no longer
+        // resizes between panes with and without a search field — it's our own view now.
+        .toolbar {
+            // Leading placement, not .principal — .principal centres the title; the pane
+            // header belongs at the leading edge right after the sidebar toggle, where
+            // the system title used to sit.
+            ToolbarItem(placement: .navigation) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(paneTitle.title)
+                        .font(.headline)
+                        .foregroundStyle(appState.readerPrefs.effectiveAccentColor)
+                    if let subtitle = paneTitle.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            // A title is not a control — drop the macOS 26 per-item glass capsule so it
+            // reads as plain text (like Finder's title), while the real toolbar buttons
+            // keep their glass bubbles.
+            .sharedBackgroundVisibility(.hidden)
+        }
+        // Hide the toolbar's own opaque backing so the window glass (which now runs up under
+        // the titlebar via .fullSizeContentView) shows through the header instead of a black
+        // bar. This is what makes the header read as native glass like Finder's.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .tint(appState.readerPrefs.effectiveAccentColor)
         .preferredColorScheme(appState.readerPrefs.effectiveAppearance)
         // No root-level opaque background: the sidebar column must stay
@@ -71,8 +114,14 @@ struct RootView: View {
         // carries `Color.appBackground` itself (see detail: closure above);
         // WelcomeView draws its own background.
         .overlay(alignment: .bottom) {
+            // Status toasts are a dev aid — suppressed entirely in release/prod builds.
+            #if DEBUG
             if let message = appState.statusMessage {
-                StatusBanner(message: message) { appState.clearMessage() }
+                StatusBanner(
+                    message: message,
+                    actionTitle: appState.statusActionTitle,
+                    onAction: appState.statusActionTitle != nil ? { appState.runStatusAction() } : nil,
+                ) { appState.clearMessage() }
                     .id(message)
                     .padding(.bottom, 28)
                     .transition(
@@ -85,6 +134,7 @@ struct RootView: View {
                         )
                     )
             }
+            #endif
         }
         .animation(.spring(response: 0.38, dampingFraction: 0.65), value: appState.statusMessage)
         .onChange(of: appState.pendingNavigation) { _, new in
@@ -92,6 +142,16 @@ struct RootView: View {
                 selectedDestination = new
                 _ = appState.consumeNavigation()
             }
+        }
+        // Immersive reader: collapse the sidebar for a full-bleed page; restore it
+        // everywhere else.
+        .onChange(of: selectedDestination) { _, dest in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                columnVisibility = (dest == .reader) ? .detailOnly : .automatic
+            }
+        }
+        .onAppear {
+            columnVisibility = (selectedDestination == .reader) ? .detailOnly : .automatic
         }
         .sheet(isPresented: $appState.isCatalogPresented) {
             CatalogSheet()
@@ -143,6 +203,8 @@ struct RootView: View {
 @MainActor
 struct StatusBanner: View {
     let message: String
+    var actionTitle: String? = nil
+    var onAction: (() -> Void)? = nil
     let onDismiss: () -> Void
     @State private var appeared = false
 
@@ -165,6 +227,12 @@ struct StatusBanner: View {
                 .lineLimit(1)
 
             Spacer(minLength: 0)
+
+            if let actionTitle, let onAction {
+                Button(actionTitle) { onAction() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
 
             Button {
                 onDismiss()
@@ -272,10 +340,10 @@ private struct BiometricLockOverlay: View {
             }
             .padding(40)
             .frame(minWidth: 300, idealWidth: 360, maxWidth: 420)
-            // Native Liquid Glass card, accent-tinted, via the shared
-            // reduce-transparency helper. Replaces the regularMaterial +
-            // aurora radial-gradient fills + conic angular-sweep border.
-            .adaptiveGlass(.rect(cornerRadius: 28), tint: Color.appAccent)
+            // Untinted: the card holds an accent `borderedProminent` button, and an accent
+            // button on an accent-tinted card blends into it. A neutral surface lets the
+            // one action on this screen actually read as the action.
+            .adaptiveGlass(.rect(cornerRadius: 28))
             .shadow(color: .black.opacity(0.4), radius: 40)
         }
     }

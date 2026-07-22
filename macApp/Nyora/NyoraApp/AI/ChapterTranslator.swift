@@ -16,6 +16,10 @@ import AppKit
 /// resets state.
 @MainActor
 final class ChapterTranslator: ObservableObject {
+    /// Shared instance — the global `NativeColorizer` re-triggers translation
+    /// repaints on this, so both must reference the same translator AppState uses.
+    static let shared = ChapterTranslator()
+
     /// pageIndex → translated blocks
     @Published var pageResults: [Int: [TranslatedBlock]] = [:]
     /// pageIndex → source image pixel size (used by overlay for coord mapping)
@@ -32,22 +36,24 @@ final class ChapterTranslator: ObservableObject {
     /// True between start() and the chapter task finishing
     @Published var isRunning: Bool = false
 
-    private let ocr = OcrProvider()
     private let google = GoogleTranslate()
     private var task: Task<Void, Never>?
 
     // The settings snapshot used for the current chapter run.
     private var settingsSnapshot: TranslationSettings?
+    /// Last response-text scale, kept so a colorizer-triggered repaint matches.
+    private var responseScale: CGFloat = 1.0
 
-    /// Cancel any in-flight work and start translating a new chapter from page 0.
+    /// Cancel any in-flight work and start translating a new chapter, beginning
+    /// from `startAt` (the page the user is on) so it's painted first.
     func start(
         chapterId: String,
         pageUrls: [URL],
         sourceLang: String,
         targetCode: String,
         settings: TranslationSettings,
-        pipelineConfig: OcrProvider.PipelineConfig = .default,
-        responseTextScale: CGFloat = 1.0
+        responseTextScale: CGFloat = 1.0,
+        startAt: Int = 0
     ) {
         if isRunning && activeChapterId == chapterId { return }
         task?.cancel()
@@ -59,20 +65,16 @@ final class ChapterTranslator: ObservableObject {
         totalCount = pageUrls.count
         isRunning = true
         settingsSnapshot = settings
+        responseScale = responseTextScale
 
-        let aiState: String
-        switch AppleIntelligenceRefiner.shared.state {
-        case .ready:                       aiState = "ready"
-        case .unsupportedOS:               aiState = "unsupportedOS"
-        case .unavailable(let reason):     aiState = "unavailable(\(reason))"
-        }
-        log("start chapter=\(chapterId) pages=\(pageUrls.count) src=\(sourceLang) tgt=\(targetCode) appleAI=\(aiState) pipeline=upscale:\(pipelineConfig.adaptiveUpscale) denoise:\(pipelineConfig.medianDenoise) stretch:\(pipelineConfig.histogramStretch) invert:\(pipelineConfig.inversionPass) rot:\(pipelineConfig.rotationPass)")
+        log("start chapter=\(chapterId) pages=\(pageUrls.count) from=\(startAt) src=\(sourceLang) tgt=\(targetCode) llm=\(settings.hasLLMConfigured && !settings.isOffline)")
 
         task = Task { [weak self] in
             await self?.runLoop(chapterId: chapterId, pageUrls: pageUrls,
                                 sourceLang: sourceLang, targetCode: targetCode,
-                                settings: settings, pipelineConfig: pipelineConfig,
-                                responseTextScale: responseTextScale)
+                                settings: settings,
+                                responseTextScale: responseTextScale,
+                                startAt: startAt)
         }
     }
 
@@ -83,45 +85,6 @@ final class ChapterTranslator: ObservableObject {
         log("stop chapter=\(activeChapterId ?? "nil")")
     }
 
-    /// Quick OCR on a single cropped region — used by tap-to-translate.
-    /// Returns the joined text of all detected blocks (single string).
-    func singleRegionOcr(cgImage: CGImage, sourceLang: String) async -> String {
-        let size = CGSize(width: cgImage.width, height: cgImage.height)
-        let result = await ocr.runOcr(cgImage: cgImage, imageSize: size, sourceLang: sourceLang)
-        return result.blocks
-            .map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// OCR returning one text string per detected block — used by the
-    /// translation sheet so each line is rendered as its own entry instead
-    /// of a wall of merged text.
-    func ocrLines(cgImage: CGImage, sourceLang: String) async -> [String] {
-        let size = CGSize(width: cgImage.width, height: cgImage.height)
-        let result = await ocr.runOcr(cgImage: cgImage, imageSize: size, sourceLang: sourceLang)
-        return result.blocks
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    /// Pure text detection (no recognition) — returns bounding boxes of every
-    /// text-like region. Catches vertical Japanese that recognition misses.
-    func detectTextRegions(cgImage: CGImage, imageSize: CGSize) async -> [CGRect] {
-        await ocr.detectAllTextRegions(cgImage: cgImage, imageSize: imageSize)
-    }
-
-    /// Same as `ocrLines` but also returns each block's bounding box in
-    /// image-pixel coords. Used by in-image overlays so translations can be
-    /// rendered at the bubble's actual location.
-    func ocrLineRects(cgImage: CGImage, sourceLang: String) async -> [(text: String, rect: CGRect)] {
-        let size = CGSize(width: cgImage.width, height: cgImage.height)
-        let result = await ocr.runOcr(cgImage: cgImage, imageSize: size, sourceLang: sourceLang)
-        return result.blocks
-            .map { ($0.text.trimmingCharacters(in: .whitespacesAndNewlines), $0.boundingBox) }
-            .filter { !$0.0.isEmpty }
-            .map { (text: $0.0, rect: $0.1) }
-    }
 
     func reset() {
         stop()
@@ -141,8 +104,8 @@ final class ChapterTranslator: ObservableObject {
         sourceLang: String,
         targetCode: String,
         settings: TranslationSettings,
-        pipelineConfig: OcrProvider.PipelineConfig = .default,
-        responseTextScale: CGFloat = 1.0
+        responseTextScale: CGFloat = 1.0,
+        startAt: Int = 0
     ) async {
         // Bounded page parallelism. Unlimited fan-out overwhelms the CDN
         // (40+ simultaneous downloads → timeouts). 8 in-flight pages saturates
@@ -150,6 +113,12 @@ final class ChapterTranslator: ObservableObject {
         // fully pipelined without hammering the image server.
         let maxConcurrent = 8
         var queue = Array(pageUrls.enumerated())
+        // Translate the page the user is on FIRST, then forward, then wrap — so
+        // the visible page paints quickly instead of after every earlier page.
+        // Keys stay the original page index.
+        if startAt > 0, startAt < queue.count {
+            queue = Array(queue[startAt...]) + Array(queue[..<startAt])
+        }
         await withTaskGroup(of: Void.self) { group in
             func enqueue() {
                 guard !Task.isCancelled, !queue.isEmpty else { return }
@@ -159,7 +128,7 @@ final class ChapterTranslator: ObservableObject {
                     await self.translateOnePage(
                         idx: idx, url: url,
                         sourceLang: sourceLang, targetCode: targetCode,
-                        settings: settings, pipelineConfig: pipelineConfig,
+                        settings: settings,
                         responseTextScale: responseTextScale
                     )
                 }
@@ -192,7 +161,6 @@ final class ChapterTranslator: ObservableObject {
         sourceLang: String,
         targetCode: String,
         settings: TranslationSettings,
-        pipelineConfig: OcrProvider.PipelineConfig,
         responseTextScale: CGFloat,
         onStage: (@MainActor @Sendable (TranslationStage) -> Void)? = nil
     ) async {
@@ -202,18 +170,23 @@ final class ChapterTranslator: ObservableObject {
 
             log("page \(idx): downloaded \(Int(imageSize.width))×\(Int(imageSize.height))")
 
-            // Apple Vision pipeline: detect bubble boxes → cluster into
-            // bubble-level rects → per-bubble OCR (with preprocess +
-            // ensemble + rot90 inside readBubblesWithVision).
-            let candidateBoxes = await ocr.detectBubbleBoxes(cgImage: cgImage, imageSize: imageSize, sourceLang: sourceLang, config: pipelineConfig)
-            log("page \(idx): Vision detected \(candidateBoxes.count) candidate text boxes")
-            // detectBubbleBoxes already runs clusterRects internally — skip the
-            // second cluster pass that was merging separate speech balloons into
-            // giant mega-boxes. Convert directly to the Bubble type.
-            let allBubbles = candidateBoxes.map { Bubble(text: $0.text, box: $0.boundingBox) }
-            log("page \(idx): \(allBubbles.count) bubbles to read")
-            let bubbles = await readBubblesWithVision(bubbles: allBubbles, fullImage: cgImage, sourceLang: sourceLang, pipelineConfig: pipelineConfig)
-            log("page \(idx): Vision KEPT text for \(bubbles.count) bubbles")
+            // Native ONNX OCR pipeline (nyora-web's proven models, run on-device via
+            // ONNX Runtime — no WKWebView): a shared bubble YOLO detector localizes speech
+            // balloons, then manga-ocr (ja) / PaddleOCR (zh/en/ko) reads each one — detection
+            // AND recognition in a single call that returns bubble boxes already paired with
+            // their text. Replaces Apple Vision.
+            let bubbles: [Bubble]
+            do {
+                let ocrBlocks = try await NativeOcrProvider.shared.ocr(cgImage: cgImage, lang: Self.ocrLang(sourceLang))
+                bubbles = ocrBlocks
+                    .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .map { Bubble(text: $0.text, box: $0.box) }
+                log("page \(idx): native OCR read \(bubbles.count) bubbles")
+            } catch {
+                log("page \(idx): native OCR failed — \(error.localizedDescription)")
+                await commit(pageIdx: idx, blocks: [], imageSize: imageSize)
+                return
+            }
             if Task.isCancelled { return }
 
             if bubbles.isEmpty {
@@ -235,25 +208,16 @@ final class ChapterTranslator: ObservableObject {
                 )
             }
 
-            // Translation pass. Prefer Apple Intelligence (on-device, free,
-            // tone-aware) when available; fall back to Google Translate
-            // when AI is unavailable (macOS < 26, AI disabled, or session
-            // creation fails).
+            // ── Translation ─────────────────────────────────────────────
+            // Google Translate is the PRIMARY MT (web parity — most accurate for manga).
+            // Apple Intelligence then OPTIONALLY polishes the output on-device.
             //
-            // OCR cleanup first: collapse repeated ellipses/middle-dots/
-            // dashes ("…・…・・" → "…"), strip the chunk-separator pipe we
-            // use inside union, drop stray ASCII digits.
+            // OCR cleanup first: collapse repeated ellipses/middle-dots/dashes
+            // ("…・…・・" → "…"), strip the union pipe, drop stray ASCII digits.
             if let onStage { await MainActor.run { onStage(.mt) } }
             let originals = blocks.map { Self.cleanOcrForMT($0.originalText) }
-            // Translation step is Google Translate — more reliable than
-            // Apple Intelligence (no safety-filter refusals, no per-bubble
-            // length penalty). Apple Intelligence still runs the *polish*
-            // step after this, rewriting each line as a manga editor would.
-            // Target language as a human-readable string for the polish
-            // session ("English", "Hindi", …). Settings stores it that way;
-            // falls back to the targetCode ("en", "hi") if missing.
             let aiTargetLang = await MainActor.run { settings.targetLang }
-            let translations: [String]
+            var translations: [String]
             do {
                 translations = try await google.translateBatch(originals, to: targetCode)
                 log("page \(idx): Google MT done, first='\(translations.first?.prefix(40) ?? "")'")
@@ -271,36 +235,47 @@ final class ChapterTranslator: ObservableObject {
                 b.backgroundColor = sampleBgColor(cgImage: cgImage, box: block.boundingBox)
                 return b
             }
-            // Publish MT result immediately so the user sees a translation
-            // fast; we'll overwrite it with the polished version once Apple
-            // Intelligence finishes its post-edit pass.
+            // Publish the MT result immediately; the optional polish overwrites it.
             await commit(pageIdx: idx, blocks: blocks, imageSize: imageSize)
             await paintAndPublish(pageIdx: idx, cgImage: cgImage, blocks: blocks, imageSize: imageSize, responseTextScale: responseTextScale)
 
-            // Apple Intelligence polish pass — runs AFTER translation when
-            // the user has enabled the toggle. Independent of the speed
-            // tier; adds 1-3 s per page in exchange for tone-aware editing
-            // of the MT output. Silently skipped on macOS < 26.
-            if pipelineConfig.applePolish && AppleIntelligenceRefiner.shared.isReady {
+            // Optional BYOK LLM refine — one chat call rewrites the whole page's Google
+            // drafts, kept coherent in reading order and using the series-context
+            // "reference" for names/terms. Falls back to the Google text when the LLM
+            // isn't configured or the reply can't be split back 1:1 (mirrors the web).
+            let (llmOn, endpoint, apiKey, model, refCtx) = await MainActor.run {
+                (settings.hasLLMConfigured && !settings.isOffline,
+                 settings.effectiveEndpoint, settings.apiKey, settings.effectiveModel, settings.context)
+            }
+            if llmOn {
                 if let onStage { await MainActor.run { onStage(.refining) } }
-                let mtTexts = blocks.map(\.translatedText)
-                let polished = await AppleIntelligenceRefiner.shared.polishTranslation(
-                    mtTexts, targetLang: aiTargetLang
-                )
-                if Task.isCancelled { return }
-                var changed = 0
-                blocks = blocks.enumerated().map { (i, block) in
-                    var b = block
-                    let new = polished[safe: i] ?? block.translatedText
-                    if new != block.translatedText { changed += 1 }
-                    b.translatedText = new
-                    b.state = .refined
-                    return b
+                let originalsForLLM = blocks.map(\.originalText)
+                let draftsForLLM = blocks.map(\.translatedText)
+                do {
+                    let refined = try await LLMRefiner.refine(
+                        originals: originalsForLLM, drafts: draftsForLLM,
+                        targetLangName: aiTargetLang, context: refCtx,
+                        endpoint: endpoint, apiKey: apiKey, model: model
+                    )
+                    if Task.isCancelled { return }
+                    if let refined, refined.count == blocks.count {
+                        blocks = blocks.enumerated().map { (i, block) in
+                            var b = block
+                            if let new = refined[safe: i]?.trimmingCharacters(in: .whitespacesAndNewlines), !new.isEmpty {
+                                b.translatedText = new
+                            }
+                            b.state = .refined
+                            return b
+                        }
+                        log("page \(idx): LLM refined \(blocks.count) bubbles")
+                        await commit(pageIdx: idx, blocks: blocks, imageSize: imageSize)
+                        await paintAndPublish(pageIdx: idx, cgImage: cgImage, blocks: blocks, imageSize: imageSize, responseTextScale: responseTextScale)
+                    } else {
+                        log("page \(idx): LLM refine misaligned — keeping Google MT")
+                    }
+                } catch {
+                    log("page \(idx): LLM refine failed — \(error.localizedDescription)")
                 }
-                log("page \(idx): AI polish rewrote \(changed) / \(blocks.count) bubbles")
-                // Re-commit + re-paint with the polished text.
-                await commit(pageIdx: idx, blocks: blocks, imageSize: imageSize)
-                await paintAndPublish(pageIdx: idx, cgImage: cgImage, blocks: blocks, imageSize: imageSize, responseTextScale: responseTextScale)
             }
         } catch {
             log("page \(idx): ERROR \(error.localizedDescription)")
@@ -318,7 +293,6 @@ final class ChapterTranslator: ObservableObject {
         sourceLang: String,
         targetCode: String,
         settings: TranslationSettings,
-        pipelineConfig: OcrProvider.PipelineConfig = .default,
         responseTextScale: CGFloat = 1.0,
         onStage: (@MainActor @Sendable (TranslationStage) -> Void)? = nil
     ) async {
@@ -340,140 +314,119 @@ final class ChapterTranslator: ObservableObject {
         activeChapterId = chapterId
         isRunning = true
         settingsSnapshot = settings
-        log("singlePage chapter=\(chapterId) idx=\(pageIndex) src=\(sourceLang) tgt=\(targetCode) pipeline=upscale:\(pipelineConfig.adaptiveUpscale) denoise:\(pipelineConfig.medianDenoise) stretch:\(pipelineConfig.histogramStretch) invert:\(pipelineConfig.inversionPass) rot:\(pipelineConfig.rotationPass)")
+        responseScale = responseTextScale
+        log("singlePage chapter=\(chapterId) idx=\(pageIndex) src=\(sourceLang) tgt=\(targetCode) llm=\(settings.hasLLMConfigured && !settings.isOffline)")
 
         await translateOnePage(
             idx: pageIndex, url: pageUrl,
             sourceLang: sourceLang, targetCode: targetCode,
-            settings: settings, pipelineConfig: pipelineConfig,
+            settings: settings,
             responseTextScale: responseTextScale,
             onStage: onStage
         )
         await finish()
     }
 
-    // MARK: - Apple Vision per-bubble reader
-    //
-    // Was manga-ocr; now Apple Vision using the same preprocess + ensemble +
-    // 90° rotation tricks the page-level OCR uses. Detection finds the bubble
-    // boxes, we crop each with padding, then ask Vision (normal + rot90 ×
-    // ja/zh/ko/en) to read the crop. Vision's `ja-JP` recogniser handles
-    // tategaki when given a tight bubble crop, and the rot90 pass catches
-    // text it still gets wrong upright. No fallback grid — empty pages stay
-    // empty rather than fabricating hallucinated text.
-
-    private func readBubblesWithVision(
-        bubbles: [Bubble],
-        fullImage: CGImage,
-        sourceLang: String,
-        pipelineConfig: OcrProvider.PipelineConfig = .default
-    ) async -> [Bubble] {
-        // Bubble-level parallelism with explicit bounded concurrency. We
-        // capture `ocr` directly (avoids the MainActor hop that `self.ocr`
-        // would force inside each Task) and cap in-flight bubbles at 4 so
-        // the OcrProvider actor + Vision GCD pool don't get flooded with
-        // 20+ simultaneous calls — that case caused page 14 to hang.
-        let fullW = CGFloat(fullImage.width)
-        let fullH = CGFloat(fullImage.height)
-        let ocrRef = ocr  // capture the actor before fanning out
-        struct Read { let idx: Int; let bubble: Bubble; let text: String; let skipped: Bool; let reason: String }
-
-        // Pre-compute all crops + dark-ratio screens on the caller (cheap,
-        // synchronous, no Vision). Tasks then only do the OCR work.
-        struct Pending { let idx: Int; let bubble: Bubble; let crop: CGImage }
-        var pending: [Pending] = []
-        for (i, bubble) in bubbles.enumerated() {
-            let pad: CGFloat = max(12, min(bubble.box.width, bubble.box.height) * 0.25)
-            let cropRect = bubble.box.insetBy(dx: -pad, dy: -pad)
-            let clamped = CGRect(
-                x: max(0, cropRect.minX),
-                y: max(0, cropRect.minY),
-                width:  min(fullW - max(0, cropRect.minX), cropRect.width),
-                height: min(fullH - max(0, cropRect.minY), cropRect.height)
-            )
-            guard clamped.width > 10, clamped.height > 10,
-                  let crop = fullImage.cropping(to: clamped) else { continue }
-            let darkRatio = Self.darkPixelRatio(crop)
-            if darkRatio < 0.02 {
-                log("vision bubble \(i) SKIP empty crop (dark=\(String(format: "%.3f", darkRatio)))")
-                continue
-            }
-            pending.append(Pending(idx: i, bubble: bubble, crop: crop))
+    private func commit(pageIdx: Int, blocks: [TranslatedBlock], imageSize: CGSize) async {
+        await MainActor.run {
+            pageResults[pageIdx] = blocks
+            pageImageSizes[pageIdx] = imageSize
+            completedCount = pageResults.count
         }
-
-        // Bounded-concurrency fan-out. Pump primes maxConcurrent tasks then
-        // replenishes one-per-finish so we never exceed the cap.
-        let maxConcurrent = 4
-        var queue = pending
-        let reads: [Read] = await withTaskGroup(of: Read.self) { group in
-            func enqueue() {
-                if Task.isCancelled || queue.isEmpty { return }
-                let p = queue.removeFirst()
-                group.addTask {
-                    let raw = await ocrRef.readBubbleText(crop: p.crop, sourceLang: sourceLang, config: pipelineConfig)
-                    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if text.isEmpty {
-                        return Read(idx: p.idx, bubble: p.bubble, text: text, skipped: true, reason: "empty OCR")
-                    }
-                    // Accept any script — not just Japanese. Korean (hangul),
-                    // Chinese, and sound effects in romaji all need translation.
-                    let meaningfulChars = text.unicodeScalars.filter {
-                        !CharacterSet.punctuationCharacters.contains($0) &&
-                        !CharacterSet.symbols.contains($0) &&
-                        !CharacterSet.whitespaces.contains($0)
-                    }.count
-                    if meaningfulChars < 2 {
-                        return Read(idx: p.idx, bubble: p.bubble, text: text, skipped: true, reason: "no real content")
-                    }
-                    return Read(idx: p.idx, bubble: p.bubble, text: text, skipped: false, reason: "")
-                }
-            }
-            for _ in 0..<maxConcurrent { enqueue() }
-            var collected: [Read] = []
-            while let r = await group.next() {
-                collected.append(r)
-                if Task.isCancelled { group.cancelAll(); break }
-                enqueue()
-            }
-            return collected.sorted { $0.idx < $1.idx }
-        }
-
-        var out: [Bubble] = []
-        var textCounts: [String: Int] = [:]
-        for read in reads {
-            if read.skipped {
-                log("vision bubble \(read.idx) DISCARD '\(read.text)' (\(read.reason))")
-                continue
-            }
-            log("vision bubble \(read.idx) KEEP '\(read.text)'")
-            textCounts[read.text, default: 0] += 1
-            out.append(Bubble(text: read.text, box: read.bubble.box))
-        }
-        let hallucinations = Set(textCounts.filter { $0.value >= 3 }.keys)
-        if !hallucinations.isEmpty {
-            log("hallucination purge: \(hallucinations.map { "'\($0)'" }.joined(separator: ", "))")
-            out.removeAll { hallucinations.contains($0.text) }
-        }
-        return dedupeOverlappingBubbles(out)
     }
 
-    /// Fraction of pixels darker than 50% brightness. Used to gate empty
-    /// crops before manga-ocr (which hallucinates on whitespace). Samples
-    /// every 4th pixel for speed — accuracy isn't critical, we just need to
-    /// distinguish "has text" from "blank".
-    /// Sanitize an OCR string before Google Translate sees it. The union /
-    /// brute-force pipeline emits things like "の…・…・・", "But, with that
-    /// in mind... . . .", or "の | は | か" (our union separator).
-    /// MT handles those eventually but the cleaner the input, the cleaner
-    /// the translation — and shorter strings cost fewer characters at the
-    /// MT provider.
-    ///
-    /// Cleanup steps (order matters):
-    ///   1. Replace our union separator " | " with " ".
-    ///   2. Collapse runs of horizontal-ellipsis / dots / middle-dot / dashes
-    ///      to a single "…".
-    ///   3. Collapse runs of full-width space + half-width space to one space.
-    ///   4. Trim trailing whitespace / punctuation noise.
+    /// Paint the translation into the page image and publish — runs off-main
+    /// so we don't block the OCR loop. Called after each commit.
+    private func paintAndPublish(pageIdx: Int, cgImage: CGImage, blocks: [TranslatedBlock], imageSize: CGSize, responseTextScale: CGFloat) async {
+        // Filter out blocks with no usable translation — painting an empty
+        // white box on the page just makes the result look broken.
+        var dropped: [String] = []
+        let bubbles: [PageImagePainter.Bubble] = blocks.compactMap { block in
+            let t = block.translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else {
+                dropped.append("'\(block.originalText.prefix(20))' (empty translation)")
+                return nil
+            }
+            // Sampled balloon-fill colour → sRGB components so the painter repaints
+            // the bubble in its own colour (not a flat white box).
+            let ns = NSColor(block.backgroundColor).usingColorSpace(.sRGB) ?? .white
+            return PageImagePainter.Bubble(
+                rect: block.boundingBox, text: t,
+                bgR: Double(ns.redComponent), bgG: Double(ns.greenComponent), bgB: Double(ns.blueComponent)
+            )
+        }
+        if !dropped.isEmpty {
+            log("page \(pageIdx): dropped \(dropped.count) bubbles: \(dropped.joined(separator: ", "))")
+        }
+        guard !bubbles.isEmpty else {
+            log("page \(pageIdx): no non-empty translations, skipping paint")
+            return
+        }
+        // Compose with colorization: if a colorized version of this page exists,
+        // paint the bubbles onto IT so translate + colorize show together (same
+        // source image → same pixel size, so the bubble coords line up). Otherwise
+        // paint on the original; the colorizer re-triggers a repaint when its page
+        // finishes (see NativeColorizer.colorizeOnePage → repaintOnColorized).
+        let baseCG: CGImage = NativeColorizer.shared.colorizedImages[pageIdx]?
+            .cgImage(forProposedRect: nil, context: nil, hints: nil) ?? cgImage
+        let painted: CGImage? = await Task.detached(priority: .userInitiated) {
+            PageImagePainter.paint(cgImage: baseCG, bubbles: bubbles, originalSize: imageSize, textScale: responseTextScale)
+        }.value
+        guard let painted else { return }
+        let ns = NSImage(cgImage: painted, size: imageSize)
+        await MainActor.run {
+            paintedImages[pageIdx] = ns
+        }
+        log("page \(pageIdx): painted image published (\(bubbles.count) bubbles, colorized=\(NativeColorizer.shared.colorizedImages[pageIdx] != nil))")
+    }
+
+    /// Re-bake a page's translation onto its now-available colorized image so
+    /// translate + colorize compose regardless of which pipeline finished first.
+    /// Called by the colorizer when it completes a page. No-op if the page isn't
+    /// translated yet.
+    func repaintOnColorized(pageIdx: Int) async {
+        guard let blocks = pageResults[pageIdx], !blocks.isEmpty,
+              let imageSize = pageImageSizes[pageIdx],
+              let colorized = NativeColorizer.shared.colorizedImages[pageIdx],
+              let cg = colorized.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return }
+        await paintAndPublish(pageIdx: pageIdx, cgImage: cg, blocks: blocks,
+                              imageSize: imageSize, responseTextScale: responseScale)
+    }
+
+    private func finish() async {
+        await MainActor.run { isRunning = false }
+    }
+
+    // MARK: - OCR helpers
+
+    private struct Bubble { let text: String; let box: CGRect }
+
+    /// Map the reader's source-language string to the OCR engine key the web worker expects
+    /// (`ja` manga-ocr, `zh`/`en` PP-OCRv6, `ko` PP-OCRv5). Defaults to Japanese — the common
+    /// manga case — mirroring the web's `source = 'ja'` default.
+    static func ocrLang(_ sourceLang: String) -> String {
+        let s = sourceLang.lowercased()
+        if s.hasPrefix("ja") || s.contains("japan") { return "ja" }
+        if s.hasPrefix("ko") || s.contains("korea") { return "ko" }
+        if s.hasPrefix("zh") || s.contains("chin") { return "zh" }
+        if s.hasPrefix("en") || s.contains("engl") { return "en" }
+        return "ja"
+    }
+
+    /// Human-readable name for an OCR language key, used in the Apple Intelligence
+    /// translate instructions ("Translate the given <Japanese> dialogue …").
+    static func ocrDisplayName(_ key: String) -> String {
+        switch key {
+        case "ko": return "Korean"
+        case "zh": return "Chinese"
+        case "en": return "English"
+        default:   return "Japanese"
+        }
+    }
+
+    /// Tidy OCR output before machine translation: collapse stretched ellipses / middle-dots /
+    /// dashes to a single "…", squash repeated whitespace, drop the union pipe separator.
     static func cleanOcrForMT(_ s: String) -> String {
         var t = s
         // Union separator → space
@@ -491,195 +444,6 @@ final class ChapterTranslator: ObservableObject {
             t = re.stringByReplacingMatches(in: t, range: range, withTemplate: " ")
         }
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func darkPixelRatio(_ cgImage: CGImage) -> Double {
-        guard let data = cgImage.dataProvider?.data,
-              CFDataGetBytePtr(data) != nil else { return 0.5 }
-        let bpp = cgImage.bitsPerPixel / 8
-        guard bpp == 4 || bpp == 3 || bpp == 1 else { return 0.5 }
-        let w = cgImage.width, h = cgImage.height
-        let bpr = cgImage.bytesPerRow
-        let length = CFDataGetLength(data)
-        var dark = 0, total = 0
-        let stride = 4
-        return withExtendedLifetime(data) { () -> Double in
-            let ptr = CFDataGetBytePtr(data)!
-            var y = 0
-            while y < h {
-                var x = 0
-                while x < w {
-                    let off = y * bpr + x * bpp
-                    if off + bpp - 1 < length {
-                        let brightness: Int
-                        if bpp == 1 {
-                            brightness = Int(ptr[off])
-                        } else {
-                            brightness = (Int(ptr[off]) + Int(ptr[off+1]) + Int(ptr[off+2])) / 3
-                        }
-                        if brightness < 128 { dark += 1 }
-                        total += 1
-                    }
-                    x += stride
-                }
-                y += stride
-            }
-            return total > 0 ? Double(dark) / Double(total) : 0
-        }
-    }
-
-    /// Drop near-duplicate bubbles — the grid fallback often produces multiple
-    /// tiles covering the same speech bubble, all returning the same text.
-    /// IoU > 0.4 OR identical text + close centers ⇒ drop.
-    private func dedupeOverlappingBubbles(_ bubbles: [Bubble]) -> [Bubble] {
-        var result: [Bubble] = []
-        for b in bubbles {
-            let dup = result.contains { existing in
-                if existing.text == b.text {
-                    let dx = abs(existing.box.midX - b.box.midX)
-                    let dy = abs(existing.box.midY - b.box.midY)
-                    if dx < 100 && dy < 100 { return true }
-                }
-                let inter = existing.box.intersection(b.box)
-                if inter.isNull || inter.isEmpty { return false }
-                let unionArea = existing.box.union(b.box)
-                let iou = (inter.width * inter.height) / max(1, unionArea.width * unionArea.height)
-                return iou > 0.4
-            }
-            if !dup { result.append(b) }
-        }
-        return result
-    }
-
-    private func commit(pageIdx: Int, blocks: [TranslatedBlock], imageSize: CGSize) async {
-        await MainActor.run {
-            pageResults[pageIdx] = blocks
-            pageImageSizes[pageIdx] = imageSize
-            completedCount = pageResults.count
-        }
-    }
-
-    /// Paint the translation into the page image and publish — runs off-main
-    /// so we don't block the OCR loop. Called after each commit.
-    private func paintAndPublish(pageIdx: Int, cgImage: CGImage, blocks: [TranslatedBlock], imageSize: CGSize, responseTextScale: CGFloat) async {
-        // Filter out blocks with no usable translation — painting an empty
-        // white box on the page just makes the result look broken.
-        var dropped: [String] = []
-        let bubbles: [(rect: CGRect, text: String)] = blocks.compactMap { block in
-            let t = block.translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else {
-                dropped.append("'\(block.originalText.prefix(20))' (empty translation)")
-                return nil
-            }
-            return (block.boundingBox, t)
-        }
-        if !dropped.isEmpty {
-            log("page \(pageIdx): dropped \(dropped.count) bubbles: \(dropped.joined(separator: ", "))")
-        }
-        guard !bubbles.isEmpty else {
-            log("page \(pageIdx): no non-empty translations, skipping paint")
-            return
-        }
-        let painted: CGImage? = await Task.detached(priority: .userInitiated) {
-            PageImagePainter.paint(cgImage: cgImage, bubbles: bubbles, originalSize: imageSize, textScale: responseTextScale)
-        }.value
-        guard let painted else { return }
-        let ns = NSImage(cgImage: painted, size: imageSize)
-        await MainActor.run {
-            paintedImages[pageIdx] = ns
-        }
-        log("page \(pageIdx): painted image published (\(bubbles.count) bubbles)")
-    }
-
-    private func finish() async {
-        await MainActor.run { isRunning = false }
-    }
-
-    // MARK: - Bubble clustering (ports Android's grid-merge logic)
-
-    private struct Bubble { let text: String; let box: CGRect }
-
-    /// Brute-force fallback: when Vision finds no text candidates, slice the
-    /// page into a 4-column × 5-row grid with 30% overlap and treat each tile
-    /// as a candidate bubble. manga-ocr returns text for tiles that actually
-    /// contain Japanese; the CJK filter in `readBubblesWithCoreML` discards
-    /// tiles that don't.
-    ///
-    /// 4×5 = 20 tiles per page × ~0.5s per manga-ocr call ≈ 10s extra per
-    /// page when this fallback kicks in. Only runs when Vision fails.
-    private func generateGridTiles(imageSize: CGSize) -> [Bubble] {
-        let cols = 4
-        let rows = 5
-        let tileW = imageSize.width / CGFloat(cols) * 1.3   // 30% overlap
-        let tileH = imageSize.height / CGFloat(rows) * 1.3
-        let stepX = imageSize.width / CGFloat(cols)
-        let stepY = imageSize.height / CGFloat(rows)
-        var out: [Bubble] = []
-        for r in 0..<rows {
-            for c in 0..<cols {
-                let x = CGFloat(c) * stepX
-                let y = CGFloat(r) * stepY
-                let w = min(tileW, imageSize.width - x)
-                let h = min(tileH, imageSize.height - y)
-                if w < 50 || h < 50 { continue }
-                out.append(Bubble(text: "", box: CGRect(x: x, y: y, width: w, height: h)))
-            }
-        }
-        return out
-    }
-
-    private func clusterBubbles(_ blocks: [OcrProvider.MangaBlock]) -> [Bubble] {
-        guard !blocks.isEmpty else { return [] }
-        var used = Set<Int>()
-        var result: [Bubble] = []
-        let sorted = blocks.indices.sorted {
-            blocks[$0].boundingBox.minY < blocks[$1].boundingBox.minY
-        }
-
-        for i in sorted {
-            guard !used.contains(i) else { continue }
-            var cluster = [blocks[i]]
-            used.insert(i)
-            var changed = true
-            while changed {
-                changed = false
-                for j in sorted where !used.contains(j) {
-                    if cluster.contains(where: { isClose($0.boundingBox, blocks[j].boundingBox) }) {
-                        cluster.append(blocks[j])
-                        used.insert(j)
-                        changed = true
-                    }
-                }
-            }
-            let text = cluster
-                .sorted { $0.boundingBox.minY < $1.boundingBox.minY }
-                .map(\.text)
-                .joined(separator: " ")
-            let box = cluster.reduce(cluster[0].boundingBox) { $0.union($1.boundingBox) }
-            result.append(Bubble(text: text, box: box))
-        }
-        return result
-    }
-
-    private func isClose(_ a: CGRect, _ b: CGRect) -> Bool {
-        let hOv = max(0, min(a.maxX, b.maxX) - max(a.minX, b.minX))
-        let vOv = max(0, min(a.maxY, b.maxY) - max(a.minY, b.minY))
-        let vGap = a.maxY < b.minY ? b.minY - a.maxY : (b.maxY < a.minY ? a.minY - b.maxY : 0)
-        let hGap = a.maxX < b.minX ? b.minX - a.maxX : (b.maxX < a.minX ? a.minX - b.maxX : 0)
-        let minH = min(a.height, b.height)
-        let avgH = (a.height + b.height) / 2
-
-        // Stacked text lines (horizontal layout) or stacked column tops
-        // (vertical Japanese reads top-to-bottom in each column): small vertical
-        // gap, any X-overlap.
-        let vNear = vGap <= max(35, avgH * 0.6) && hOv > 0
-        // Vertical Japanese in adjacent columns within the same bubble: large
-        // Y-overlap (full column height), horizontal gap up to ~70% of the
-        // column height (column spacing scales with text size, not column
-        // width which is just one character). Without this, every column
-        // becomes its own "bubble" and gets a separate painted rect.
-        let hNear = hGap <= max(40, avgH * 0.7) && vOv >= minH * 0.3
-        return vNear || hNear || a.intersects(b)
     }
 
     // MARK: - Background sampling

@@ -105,6 +105,82 @@ final class AppState: ObservableObject {
         hideNsfwSources ? sources.filter { !$0.isNsfw } : sources
     }
 
+    // MARK: - Curated installed set (mirrors nyora-web)
+    //
+    // The web keeps the "installed" set client-side (localStorage), seeded from the
+    // languages picked at onboarding, defaulting to "everything" when the user hasn't
+    // customized. The shared engine can browse ANY source regardless of its `isInstalled`
+    // flag ("just a UI guard"), so we replicate that here: a persisted id set that we
+    // overlay onto every source/catalog list. `nil` ⇒ uncustomized (all sources count as
+    // installed, exactly like the web's default).
+    private static let curatedKey = "nyora.sources.curated.v1"
+    @Published private(set) var curatedSourceIds: Set<String>? = {
+        guard let arr = UserDefaults.standard.array(forKey: AppState.curatedKey) as? [String] else { return nil }
+        return Set(arr)
+    }()
+
+    private func persistCuratedSources() {
+        if let ids = curatedSourceIds {
+            UserDefaults.standard.set(Array(ids), forKey: Self.curatedKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.curatedKey)
+        }
+    }
+
+    /// Overlay the curated set onto a freshly-fetched source list. With no curation the
+    /// engine's own flags stand; otherwise `isInstalled` reflects the curated set.
+    private func applyingCuration(_ list: [SourceSummary]) -> [SourceSummary] {
+        guard let ids = curatedSourceIds else { return list }
+        return list.map { $0.withInstalled(ids.contains($0.id)) }
+    }
+
+    private func applyingCuration(catalog list: [HelperCatalogEntry]) -> [HelperCatalogEntry] {
+        guard let ids = curatedSourceIds else { return list }
+        return list.map { $0.withInstalled(ids.contains($0.id)) }
+    }
+
+    /// Central setters so every load path applies curation consistently.
+    private func setSources(_ list: [SourceSummary]) { sources = applyingCuration(list) }
+    private func setCatalog(_ list: [HelperCatalogEntry]) { catalog = applyingCuration(catalog: list) }
+
+    /// Materialize the curated set from the current installed sources when it's still `nil`
+    /// (uncustomized). Needed before an individual install/uninstall can mutate it — the web
+    /// does the same (its default `null` set expands to "all catalog ids" on first edit).
+    private func materializeCuration() {
+        guard curatedSourceIds == nil else { return }
+        let base = sources.isEmpty ? [] : sources.filter(\.isInstalled).map(\.id)
+        curatedSourceIds = Set(base)
+    }
+
+    // MARK: - Explore source picker (recents + pinning)
+
+    /// Recently-used source ids, most-recent first (persisted). Powers the source picker's
+    /// Recents section so the user isn't scrolling a flat 468-source list to switch.
+    @Published var recentSourceIds: [String] =
+        (UserDefaults.standard.array(forKey: "nyora.explore.recentSources") as? [String]) ?? []
+
+    /// Push a source to the front of the MRU list. Called when a source is opened.
+    func pushRecentSource(_ id: String) {
+        guard !id.isEmpty else { return }
+        var list = recentSourceIds.filter { $0 != id }
+        list.insert(id, at: 0)
+        recentSourceIds = Array(list.prefix(8))
+        UserDefaults.standard.set(recentSourceIds, forKey: "nyora.explore.recentSources")
+    }
+
+    /// Pin / unpin a source (the engine's togglePin endpoint — previously unreachable from the
+    /// UI). Updates the source list in place so the picker's Pinned section reflects it.
+    func togglePinSource(_ id: String) async {
+        guard let updated = try? await helper.togglePin(sourceId: id) else { return }
+        setSources(updated)
+    }
+
+    /// The currently-selected source, resolved from the list.
+    var activeSourceSummary: SourceSummary? {
+        guard let id = selectedSourceId else { return nil }
+        return sources.first { $0.id == id }
+    }
+
     // Downloads
     @Published var downloads: [HelperDownload] = []
     @Published var downloadSettings: HelperDownloadSettings? = nil
@@ -122,9 +198,9 @@ final class AppState: ObservableObject {
     @Published var globalSearchResults: [HelperGlobalSearchGroup] = []
 
     // Nyora Sync
-    @Published var supabaseStatus: SupabaseStatusResponse? = nil
-    @Published var isSupabaseSyncing: Bool = false
-    @Published var isSupabaseSigningIn: Bool = false
+    @Published var nyoraSyncStatus: NyoraSyncStatusResponse? = nil
+    @Published var isNyoraSyncing: Bool = false
+    @Published var isNyoraSyncSigningIn: Bool = false
 
     // Domain-scoped child observable objects
     let readerState = ReaderState()
@@ -160,9 +236,16 @@ final class AppState: ObservableObject {
         get { readerState.readerMangaTitle }
         set { readerState.readerMangaTitle = newValue }
     }
+    /// Right-to-left reading. SINGLE source of truth = `readerMode`: `.reversed`
+    /// is paged-RTL, `.standard` is paged-LTR. Deriving it from the mode (instead
+    /// of a separate bool) keeps taps, arrow keys, double-page order and the
+    /// page-curl all in agreement. RTL only applies to the paged modes.
     var rtlReading: Bool {
-        get { readerState.rtlReading }
-        set { readerState.rtlReading = newValue }
+        get { readerMode.isRTL }
+        set {
+            guard readerMode == .standard || readerMode == .reversed else { return }
+            readerMode = newValue ? .reversed : .standard
+        }
     }
     var currentPageTranslation: [TranslatedBlock] {
         get { translationState.currentPageTranslation }
@@ -252,8 +335,13 @@ final class AppState: ObservableObject {
     let helper = NyoraHelperBridge()
     @Published var readerPrefs = ReaderPrefs()
     let translateSettings = TranslationSettings()
-    let translator = MangaTranslator()
-    let chapterTranslator = ChapterTranslator()
+    let chapterTranslator = ChapterTranslator.shared
+    /// Native ONNX manga colorizer (full manga-colorization-v2 pipeline, run on
+    /// device). Reader binds to `colorizer.colorizedImages[pageIndex]`.
+    let colorizer = NativeColorizer.shared
+    /// Whether AI colorization is active for the current chapter (ephemeral,
+    /// like `translateModeOn`). When on, opening/paging a chapter colorizes it.
+    @Published var colorizeModeOn: Bool = false
     let tracker = TrackerSettings()
 
     /// Wall-clock time the current `translationStage` was entered. Used by
@@ -267,19 +355,51 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     func bootstrap() async {
-        readerPrefs.objectWillChange
+        // CRITICAL: readerPageIndex / readerMode / activeChapter live on the child
+        // ReaderState object. The reader tree observes AppState (@EnvironmentObject),
+        // NOT ReaderState — so without this forward a page turn fires
+        // readerState.objectWillChange into the void and the new page only appears
+        // when the 2.5s idle-timer coincidentally repaints. UNTHROTTLED: page turns
+        // are discrete user actions, not churn — any delay here IS the lag.
+        readerState.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        statusMessage = "Locating Nyora helper…"
+        // Throttled: dragging a Quick-Settings brightness/contrast/gamma/zoom slider
+        // publishes at ~60-120Hz; coalesce so it can't thrash the whole reader tree.
+        // Discrete toggles (two-page, mode, accent) still land within ~120ms.
+        readerPrefs.objectWillChange
+            .throttle(for: .milliseconds(120), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // Forward the nested translator/colorizer changes so the reader (which
+        // observes AppState) re-renders the CURRENT page the instant a page is
+        // painted/colorized. THROTTLED (~120 ms, latest wins) so the per-bubble /
+        // per-progress churn during a chapter pass can't thrash the whole reader.
+        chapterTranslator.objectWillChange
+            .throttle(for: .milliseconds(120), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        colorizer.objectWillChange
+            .throttle(for: .milliseconds(120), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // Dry-run installed OCR models on the GPU in the background so CoreML has
+        // compiled their Metal programs before the first translated page needs them.
+        Task { await NativeOcrProvider.shared.warmupInstalled() }
+
         await helper.start { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
                 self.helperStatus = state.status
                 self.helperBaseUrl = state.baseUrl
                 if state.status == .running {
-                    self.statusMessage = "Helper ready"
+                    // The helper is an implementation detail — starting it is not news.
+                    // Only its *failure* (below) is worth interrupting the user for.
+                    self.statusMessage = nil
                     // Fan-out the initial reloads in parallel — they touch
                     // disjoint helper endpoints, so serializing them just
                     // added latency on first launch.
@@ -290,16 +410,11 @@ final class AppState: ObservableObject {
                     async let upd = self.reloadUpdates()
                     async let cats = self.reloadCategories()
                     async let dls = self.reloadDownloads()
-                    async let sb = self.refreshSupabaseStatus()
+                    async let sb = self.refreshNyoraSyncStatus()
                     _ = await (sources, history, favs, bms, upd, cats, dls, sb)
-                    if let pinned = self.sources.first(where: { $0.isPinned && $0.isInstalled }) {
-                        self.selectedSourceId = pinned.id
-                        await self.loadPopular(sourceId: pinned.id)
-                    } else if let firstInstalled = self.sources.first(where: { $0.isInstalled }) {
-                        // No pinned source — auto-select the first installed
-                        // one so the Explore pane isn't blank on launch.
-                        self.selectedSourceId = firstInstalled.id
-                    }
+                    // Explore lands on the source-grid ("Manga sources") like the web —
+                    // we deliberately do NOT auto-select a source here. The grid is the
+                    // home of Explore; the user taps a source to browse it.
                 } else if let error = state.error {
                     self.statusMessage = "Helper not ready: \(error)"
                 }
@@ -312,7 +427,7 @@ final class AppState: ObservableObject {
         defer { isLoading = false }
         do {
             let list = try await helper.fetchSources()
-            sources = list
+            setSources(list)
         } catch {
             statusMessage = "Failed to load sources: \(error.localizedDescription)"
         }
@@ -322,7 +437,7 @@ final class AppState: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            sources = try await helper.refreshSources()
+            setSources(try await helper.refreshSources())
             statusMessage = "Loaded \(sources.count) sources"
         } catch {
             statusMessage = "Catalog refresh failed: \(error.localizedDescription)"
@@ -331,6 +446,7 @@ final class AppState: ObservableObject {
 
     func loadPopular(sourceId: String) async {
         guard !sourceId.isEmpty else { return }
+        pushRecentSource(sourceId)
         selectedSourceId = sourceId
         selectedBrowseMangaId = nil
         activeMangaDetails = nil
@@ -346,6 +462,7 @@ final class AppState: ObservableObject {
         } catch {
             guard browseRequestToken == token else { return }
             statusMessage = "Browse failed: \(error.localizedDescription)"
+            offerCloudflareSolve(for: sourceId)
             browseMangas = []
         }
         if browseRequestToken == token { isBrowseLoading = false }
@@ -368,6 +485,7 @@ final class AppState: ObservableObject {
         } catch {
             guard browseRequestToken == token else { return }
             statusMessage = "Browse failed: \(error.localizedDescription)"
+            offerCloudflareSolve(for: sourceId)
             browseMangas = []
         }
         if browseRequestToken == token { isBrowseLoading = false }
@@ -444,7 +562,7 @@ final class AppState: ObservableObject {
         await openChapter(chapter, in: chapters)
     }
 
-    func openChapter(_ chapter: HelperChapter, in chapters: [HelperChapter]) async {
+    func openChapter(_ chapter: HelperChapter, in chapters: [HelperChapter], startAtBeginning: Bool = false) async {
         guard let sid = selectedSourceId ?? sources.first(where: { $0.isInstalled })?.id else {
             statusMessage = "No source selected"
             return
@@ -465,9 +583,14 @@ final class AppState: ObservableObject {
             if let details = activeMangaDetails {
                 readerMangaId = details.manga.id
                 readerMangaTitle = details.manga.title
-                // Resume from saved page if the user was previously on this chapter.
-                let resume = history.first { $0.mangaId == details.manga.id && $0.chapterId == chapter.url }
-                readerPageIndex = min(resume?.page ?? 0, max(proxied.count - 1, 0))
+                if startAtBeginning {
+                    // Explicit chapter advance — always start at page 1, never resume.
+                    readerPageIndex = 0
+                } else {
+                    // Resume from saved page if the user was previously on this chapter.
+                    let resume = history.first { $0.mangaId == details.manga.id && $0.chapterId == chapter.url }
+                    readerPageIndex = min(resume?.page ?? 0, max(proxied.count - 1, 0))
+                }
             } else {
                 readerPageIndex = 0
             }
@@ -476,13 +599,22 @@ final class AppState: ObservableObject {
             // Wipe stale per-page translation/balloon state on chapter change.
             clearPageTranslation()
             chapterTranslator.reset()
+            // Colorized pages are per-chapter (keyed by page index) — wipe them,
+            // then re-colorize the new chapter if the mode is still on.
+            colorizer.reset()
+            if colorizeModeOn {
+                let pageUrls = proxied.compactMap { URL(string: $0.url) }
+                if !pageUrls.isEmpty {
+                    colorizer.start(chapterId: chapter.url, pageUrls: pageUrls, startAt: readerPageIndex)
+                }
+            }
             await refreshActiveMangaAdjustments()
             // Background side effects — never block the reader from opening.
             Task.detached(priority: .background) { [weak self] in
                 await self?.prefetchNextChapter()
             }
             Task.detached(priority: .background) { [weak self] in
-                await self?.scrobbleAniList(chapter: chapter)
+                await self?.scrobbleAllTrackers(chapter: chapter)
             }
             // Instant translation: kick off chapter-wide parallel OCR + MT
             // the moment the reader opens. Pages flow into
@@ -502,8 +634,8 @@ final class AppState: ObservableObject {
                         sourceLang: translateSettings.sourceLang,
                         targetCode: translateSettings.googleLangCode(for: translateSettings.targetLang),
                         settings: translateSettings,
-                        pipelineConfig: readerPrefs.ocrPipelineConfig,
-                        responseTextScale: CGFloat(readerPrefs.translationResponseScale)
+                        responseTextScale: CGFloat(readerPrefs.translationResponseScale),
+                        startAt: readerPageIndex
                     )
                     // Drive HUD chips: poll translator state every 0.8 s
                     // and advance stages as pages complete.
@@ -583,32 +715,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Best-effort AniList scrobble. Looks up the AniList media id once per
-    /// manga (cached on `TrackerSettings.anilistLinks`), then PUTs the new
-    /// progress with status `CURRENT`. Silent on failure.
-    private func scrobbleAniList(chapter: HelperChapter) async {
-        guard tracker.isConfigured else { return }
-        let token = tracker.anilistToken
+    /// Best-effort progress sync to every linked + enabled tracker. For each
+    /// service it resolves the remote media id once per manga (cached on
+    /// `TrackerSettings.links`), then create-or-updates progress with status
+    /// `reading`. Each service is independent and fails silently, so one
+    /// unreachable tracker never blocks the others.
+    private func scrobbleAllTrackers(chapter: HelperChapter) async {
         let mangaId = readerMangaId
         guard !mangaId.isEmpty else { return }
-        let progress = Int(chapter.number.rounded())
-        let mediaId: Int
-        if let cached = tracker.anilistLinks[mangaId] {
-            mediaId = cached
-        } else {
-            let title = readerMangaTitle
-            guard !title.isEmpty,
-                  let match = try? await helper.anilistSearch(title: title, token: token).first
-            else { return }
-            mediaId = match.id
-            tracker.anilistLinks[mangaId] = mediaId
+        let progress = max(Int(chapter.number.rounded()), 1)
+        let title = readerMangaTitle
+        for service in TrackerService.allCases {
+            guard tracker.isEnabled(service), tracker.hasToken(service) else { continue }
+            let token = tracker.token(service)
+            guard !token.isEmpty else { continue }
+            let slug = service.endpointSlug
+            let mediaId: Int
+            if let cached = tracker.links(service)[mangaId] {
+                mediaId = cached
+            } else {
+                guard !title.isEmpty,
+                      let hit = try? await helper.trackerSearch(slug: slug, title: title, token: token).first
+                else { continue }
+                mediaId = hit.id
+                tracker.setLink(service, mangaId: mangaId, mediaId: mediaId)
+            }
+            _ = try? await helper.trackerScrobble(
+                slug: slug,
+                mediaId: mediaId,
+                progress: progress,
+                status: "reading",
+                token: token
+            )
         }
-        _ = try? await helper.anilistScrobble(
-            mediaId: mediaId,
-            progress: max(progress, 1),
-            status: "CURRENT",
-            token: token
-        )
     }
 
     /// Persist the current reader position to history. Safe to call frequently.
@@ -648,16 +787,26 @@ final class AppState: ObservableObject {
     var hasNextChapter: Bool { readerChapters.indices.contains(readerChapterIndex + chapterNextStep) }
     var hasPrevChapter: Bool { readerChapters.indices.contains(readerChapterIndex - chapterNextStep) }
 
+    // MARK: Auto-scroll (matches the web reader)
+    /// Session toggle — not persisted. Observed directly on AppState so the
+    /// play/pause chrome button and the reader loops react live.
+    @Published var autoScrollOn: Bool = false
+    func toggleAutoScroll() { autoScrollOn.toggle() }
+    /// Webtoon continuous speed: 24 … 258 px/sec across levels 1…10.
+    var autoScrollPxPerSec: Double { 24 + Double(readerPrefs.autoScrollLevel - 1) * 26 }
+    /// Paged auto-advance delay: ~8.7s … 1.7s across levels 1…10.
+    var autoScrollPagedDelay: Double { max(1.5, 9.5 - Double(readerPrefs.autoScrollLevel) * 0.78) }
+    func bumpAutoScrollSpeed(_ delta: Int) {
+        readerPrefs.autoScrollLevel = min(10, max(1, readerPrefs.autoScrollLevel + delta))
+    }
+
     /// `delta`: +1 = next chapter, -1 = previous (order-independent).
     func gotoChapterRelative(_ delta: Int) async {
         let newIndex = readerChapterIndex + delta * chapterNextStep
         guard readerChapters.indices.contains(newIndex) else { return }
-        // Forget the saved page so we start at 0 in the new chapter.
-        if let details = activeMangaDetails {
-            history.removeAll { $0.mangaId == details.manga.id && $0.chapterId == readerChapters[newIndex].url }
-        }
         readerPageIndex = 0
-        await openChapter(readerChapters[newIndex], in: readerChapters)
+        // Always start the new chapter at page 1 — never resume a saved position.
+        await openChapter(readerChapters[newIndex], in: readerChapters, startAtBeginning: true)
     }
 
     func install(_ source: SourceSummary) async {
@@ -665,7 +814,8 @@ final class AppState: ObservableObject {
         defer { isLoading = false }
         do {
             _ = try await helper.install(sourceId: source.id)
-            sources = try await helper.fetchSources()
+            addToCuration(source.id)
+            setSources(try await helper.fetchSources())
             statusMessage = "Installed \(source.name)"
         } catch {
             statusMessage = "Install failed: \(error.localizedDescription)"
@@ -675,35 +825,51 @@ final class AppState: ObservableObject {
     func installFromCatalog(_ entry: HelperCatalogEntry) async {
         do {
             _ = try await helper.install(sourceId: entry.id)
-            sources = try await helper.fetchSources()
-            catalog = (try? await helper.catalog()) ?? catalog
+            addToCuration(entry.id)
+            setSources(try await helper.fetchSources())
+            setCatalog((try? await helper.catalog()) ?? catalog)
             statusMessage = "Installed \(entry.name)"
         } catch {
             statusMessage = "Install failed: \(error.localizedDescription)"
         }
     }
 
+    /// Add a source to the curated installed set (materializing the "all" default first, so
+    /// installing a source from the catalogue makes it appear in Explore immediately).
+    private func addToCuration(_ id: String) {
+        materializeCuration()
+        curatedSourceIds?.insert(id)
+        persistCuratedSources()
+    }
+
+    /// Remove a source from the curated installed set (materializing first).
+    private func removeFromCuration(_ id: String) {
+        materializeCuration()
+        curatedSourceIds?.remove(id)
+        persistCuratedSources()
+    }
+
     /// Onboarding / re-run setup: install every catalog entry in `entries` that
     /// isn't already installed, then refresh the source + catalog lists. Existing
     /// installed sources are left untouched (additive seed — we never uninstall).
-    /// Installs are fanned out in bounded batches so the localhost install storm
-    /// stays reasonable even when seeding the whole catalog.
+    /// Mirrors nyora-web's onboarding: REPLACE the curated installed set with exactly the
+    /// language-matched catalog ids. The web keeps this set client-side (the shared engine can
+    /// browse any source regardless of its install flag), so this is instant and non-destructive
+    /// — no per-source install storm, and it filters Explore/search/sidebar down to the chosen
+    /// languages immediately. Re-run setup from Settings applies a new selection the same way.
     func seedSources(from entries: [HelperCatalogEntry]) async {
-        let ids = entries.filter { !$0.isInstalled }.map(\.id)
-        let helper = self.helper
-        var index = 0
-        let batchSize = 8
-        while index < ids.count {
-            let batch = Array(ids[index..<min(index + batchSize, ids.count)])
-            await withTaskGroup(of: Void.self) { group in
-                for id in batch {
-                    group.addTask { _ = try? await helper.install(sourceId: id) }
-                }
-            }
-            index += batchSize
-        }
-        sources = (try? await helper.fetchSources()) ?? sources
-        catalog = (try? await helper.catalog()) ?? catalog
+        curatedSourceIds = Set(entries.map(\.id))
+        persistCuratedSources()
+        // Mirror the curated set into the engine DB (one bulk call) so NyoraSync source-prefs
+        // sync pushes the user's real installed set — otherwise the engine still reports its
+        // seed default. Individual install/uninstall already hit the engine directly.
+        _ = try? await helper.setInstalledSources(ids: Array(curatedSourceIds ?? []))
+        // Re-apply to whatever is already loaded so Explore reflects the new set at once,
+        // then refresh from the engine (also curated) to fill in any missing metadata.
+        sources = applyingCuration(sources)
+        catalog = applyingCuration(catalog: catalog)
+        if let fresh = try? await helper.fetchSources() { setSources(fresh) }
+        if let freshCatalog = try? await helper.catalog() { setCatalog(freshCatalog) }
     }
 
     func openCatalog() async {
@@ -715,7 +881,7 @@ final class AppState: ObservableObject {
         isCatalogLoading = true
         defer { isCatalogLoading = false }
         do {
-            catalog = try await helper.catalog()
+            setCatalog(try await helper.catalog())
         } catch {
             statusMessage = "Catalog load failed: \(error.localizedDescription)"
         }
@@ -810,8 +976,30 @@ final class AppState: ObservableObject {
 
     /// Opens a favourited manga's details page. Tries to resolve the source
     /// from the first installed source when no direct sourceId is available.
+    /// The (sourceId, mangaUrl) a saved manga belongs to — resolved from its own
+    /// source ref (favourites) or from a history row — so it opens in the RIGHT
+    /// (synced) source, not whatever is currently selected in Explore.
+    func resolveMangaLocation(forMangaId id: String) -> (sourceId: String, mangaUrl: String)? {
+        if let fav = favourites.first(where: { $0.id == id }),
+           let sid = fav.resolvedSourceId, sources.contains(where: { $0.id == sid }) {
+            return (sid, fav.url)
+        }
+        if let row = history.first(where: { $0.mangaId == id }) {
+            return (row.sourceId, row.mangaUrl)
+        }
+        if let fav = favourites.first(where: { $0.id == id }),
+           let sid = selectedSourceId ?? sources.first(where: { $0.isInstalled })?.id {
+            return (sid, fav.url)  // last resort: known url, best-guess source
+        }
+        return nil
+    }
+
     func openFavouriteManga(_ manga: HelperManga) async {
-        guard let sid = selectedSourceId ?? sources.first(where: { $0.isInstalled })?.id else {
+        // Prefer the manga's OWN source (where it was saved), then a history match,
+        // then the currently-selected / first installed source as a fallback.
+        let resolved = (manga.resolvedSourceId.flatMap { sid in sources.contains(where: { $0.id == sid }) ? sid : nil })
+            ?? history.first(where: { $0.mangaId == manga.id })?.sourceId
+        guard let sid = resolved ?? selectedSourceId ?? sources.first(where: { $0.isInstalled })?.id else {
             statusMessage = "No installed source — open a source in Explore first."
             return
         }
@@ -958,28 +1146,48 @@ final class AppState: ObservableObject {
     }
 
     func openBookmark(_ bookmark: HelperBookmark) async {
-        // Try to find the manga in details / favourites / sources, otherwise
-        // try resolving via /manga/details. For now keep it simple: only handle
-        // bookmarks for the currently-loaded manga.
-        guard let details = activeMangaDetails,
-              details.manga.id == bookmark.mangaId
-        else {
-            statusMessage = "Open this manga from Explore first to jump to a bookmark."
+        // Already open & matching → jump directly.
+        if let details = activeMangaDetails, details.manga.id == bookmark.mangaId {
+            await jumpToBookmark(bookmark, in: details)
             return
         }
-        if let chapter = details.chapters.first(where: { $0.url == bookmark.chapterId }) {
-            await openChapter(chapter, in: details.chapters)
-            // Override the history-resume page that openChapter computed with
-            // the bookmark's exact page. This must happen AFTER openChapter
-            // returns (openChapter overwrites readerPageIndex from history),
-            // and we persist once with the correct value so history is not left
-            // pointing at the wrong page from openChapter's internal persist call.
-            readerPageIndex = bookmark.page
-            pendingNavigation = .reader
-            await persistReaderPosition()
-        } else {
-            statusMessage = "Couldn't find that chapter in the current manga."
+        // Otherwise resolve the manga's REAL source + url (from favourites/history)
+        // and open its chapter overview in that correct source before jumping.
+        guard let loc = resolveMangaLocation(forMangaId: bookmark.mangaId) else {
+            statusMessage = "Couldn't find the source for this bookmark — open the manga from its source once."
+            return
         }
+        selectedSourceId = loc.sourceId
+        activeMangaDetails = nil
+        detailsIsFavourited = false
+        isDetailLoading = true
+        let token = UUID()
+        detailRequestToken = token
+        do {
+            let details = try await helper.details(sourceId: loc.sourceId, mangaUrl: loc.mangaUrl)
+            guard detailRequestToken == token else { return }
+            activeMangaDetails = details
+            selectedBrowseMangaId = details.manga.id
+            isDetailLoading = false
+            await refreshDetailsFavouritedFlag()
+            await jumpToBookmark(bookmark, in: details)
+        } catch {
+            isDetailLoading = false
+            statusMessage = "Couldn't open the bookmarked manga."
+        }
+    }
+
+    private func jumpToBookmark(_ bookmark: HelperBookmark, in details: HelperDetailsResponse) async {
+        guard let chapter = details.chapters.first(where: { $0.url == bookmark.chapterId }) else {
+            statusMessage = "Couldn't find that chapter in the manga."
+            return
+        }
+        await openChapter(chapter, in: details.chapters)
+        // Override the history-resume page with the bookmark's exact page (after
+        // openChapter, which sets readerPageIndex from history), then persist once.
+        readerPageIndex = bookmark.page
+        pendingNavigation = .reader
+        await persistReaderPosition()
     }
 
     func uninstall(_ source: SourceSummary) async {
@@ -987,7 +1195,8 @@ final class AppState: ObservableObject {
         defer { isLoading = false }
         do {
             _ = try await helper.uninstall(sourceId: source.id)
-            sources = try await helper.fetchSources()
+            removeFromCuration(source.id)
+            setSources(try await helper.fetchSources())
             if selectedSourceId == source.id {
                 browseRequestToken = UUID()
                 detailRequestToken = UUID()
@@ -1008,7 +1217,51 @@ final class AppState: ObservableObject {
         await helper.stop()
     }
 
-    func clearMessage() { statusMessage = nil }
+    func clearMessage() { statusMessage = nil; statusActionTitle = nil }
+
+    // MARK: - Manual Cloudflare solve
+
+    /// A one-tap action offered alongside `statusMessage` (e.g. "Verify" on a browse
+    /// failure). nil when the current message has no action.
+    @Published var statusActionTitle: String?
+    private var statusActionHandler: (@MainActor () async -> Void)?
+
+    /// True while a manual Cloudflare solve is running (drives the toolbar button state).
+    @Published var isSolvingCloudflare: Bool = false
+
+    func runStatusAction() {
+        guard let handler = statusActionHandler else { return }
+        Task { await handler() }
+    }
+
+    /// Open the Cloudflare verification window for the given source and, on success, refresh
+    /// its browse. Wired to the Explore toolbar button and the browse-failure toast.
+    func solveCloudflare(for sourceId: String) async {
+        guard !sourceId.isEmpty, !isSolvingCloudflare else { return }
+        isSolvingCloudflare = true
+        defer { isSolvingCloudflare = false }
+        statusMessage = "Finding source domain…"
+        statusActionTitle = nil
+        guard let host = await helper.sourceDomain(id: sourceId) else {
+            statusMessage = "Couldn't determine this source's domain."
+            return
+        }
+        statusMessage = "Complete the Cloudflare verification for \(host), then close its window."
+        let ok = await helper.solveCloudflareManually(host: host)
+        if ok {
+            statusMessage = nil
+            await loadPopular(sourceId: sourceId)
+        } else {
+            statusMessage = "Cloudflare verification was cancelled."
+        }
+    }
+
+    /// Attach the "Verify" action to the current status message (called from browse-failure
+    /// paths) so the toast offers a manual solve.
+    func offerCloudflareSolve(for sourceId: String) {
+        statusActionTitle = "Verify"
+        statusActionHandler = { [weak self] in await self?.solveCloudflare(for: sourceId) }
+    }
 
     func consumeNavigation() -> NavDestination? {
         let pending = pendingNavigation
@@ -1303,7 +1556,6 @@ final class AppState: ObservableObject {
                 sourceLang: self.translateSettings.sourceLang,
                 targetCode: self.translateSettings.googleLangCode(for: self.translateSettings.targetLang),
                 settings: self.translateSettings,
-                pipelineConfig: self.readerPrefs.ocrPipelineConfig,
                 responseTextScale: CGFloat(self.readerPrefs.translationResponseScale),
                 onStage: { [weak self] stage in self?.beginStage(stage) }
             )
@@ -1339,6 +1591,25 @@ final class AppState: ObservableObject {
                 self.translationSheetLoading = false
             }
         }
+    }
+
+    // MARK: - AI colorization
+
+    /// Toggle native ONNX colorization for the current chapter. On → downloads
+    /// the model if needed (progress in Settings), then colorizes every page in
+    /// the background; the reader shows each page as it finishes. Off → stops and
+    /// wipes the colorized pages so the source images show again.
+    func toggleColorize() {
+        colorizeModeOn.toggle()
+        guard colorizeModeOn else {
+            colorizer.stop()
+            colorizer.reset()
+            return
+        }
+        guard let chapter = activeChapter else { return }
+        let pageUrls = chapter.pages.compactMap { URL(string: $0.url) }
+        guard !pageUrls.isEmpty else { return }
+        colorizer.start(chapterId: chapter.id, pageUrls: pageUrls, startAt: readerPageIndex)
     }
 
     // MARK: - Debug HUD stage transitions
@@ -1701,41 +1972,38 @@ private extension NSImage {
 extension AppState {
     // MARK: - Nyora Sync
 
-    func refreshSupabaseStatus() async {
+    func refreshNyoraSyncStatus() async {
         do {
-            supabaseStatus = try await helper.supabaseStatus()
+            nyoraSyncStatus = try await helper.nyoraSyncStatus()
         } catch {
-            print("Supabase status error: \(error)")
+            print("NyoraSync status error: \(error)")
         }
     }
 
-    func supabaseSignIn(email: String, password: String) async -> Bool {
+    func nyoraSyncSignIn(email: String, password: String) async -> Bool {
         await performAuth(statusMessage: "Signing in…") {
-            try await self.helper.supabaseSignIn(email: email, password: password)
+            try await self.helper.nyoraSyncSignIn(email: email, password: password)
         }
     }
 
-    func supabaseRegister(email: String, password: String) async -> Bool {
+    func nyoraSyncRegister(email: String, password: String) async -> Bool {
         await performAuth(statusMessage: "Creating account…") {
-            try await self.helper.supabaseRegister(email: email, password: password)
+            try await self.helper.nyoraSyncRegister(email: email, password: password)
         }
     }
 
     private func performAuth(statusMessage: String, _ call: () async throws -> Bool) async -> Bool {
-        isSupabaseSigningIn = true
+        isNyoraSyncSigningIn = true
         self.statusMessage = statusMessage
-        defer { isSupabaseSigningIn = false }
+        defer { isNyoraSyncSigningIn = false }
         do {
             let ok = try await call()
-            await refreshSupabaseStatus()
+            await refreshNyoraSyncStatus()
             if ok {
-                // Refresh library after auth to pull cloud data
-                await reloadFavourites()
-                await reloadHistory()
-                await reloadBookmarks()
-                await reloadUpdates()
-                await reloadCategories()
-                self.statusMessage = "Signed in. Syncing your library…"
+                // Actually run the sync (push local → pull cloud → reload). This block used to
+                // only reload LOCAL data and set a "Syncing…" message without ever calling
+                // nyoraSync(), so cloud data never arrived and the toast sat forever.
+                await nyoraSync()
             } else {
                 self.statusMessage = "Sign-in failed"
             }
@@ -1746,47 +2014,47 @@ extension AppState {
         }
     }
 
-    func supabaseSignOut() async {
+    func nyoraSyncSignOut() async {
         do {
-            try await helper.supabaseSignOut()
-            await refreshSupabaseStatus()
+            try await helper.nyoraSyncSignOut()
+            await refreshNyoraSyncStatus()
         } catch {
-            print("Supabase sign out error: \(error)")
+            print("NyoraSync sign out error: \(error)")
         }
     }
 
-    func supabaseSync() async {
-        isSupabaseSyncing = true
+    func nyoraSync() async {
+        isNyoraSyncing = true
         statusMessage = "Syncing your library..."
-        defer { isSupabaseSyncing = false }
+        defer { isNyoraSyncing = false }
         do {
-            try await helper.supabaseSync()
-            await refreshSupabaseStatus()
+            try await helper.nyoraSync()
+            await refreshNyoraSyncStatus()
             await reloadAllDataAfterSync()
             statusMessage = "Nyora Sync complete"
         } catch {
-            print("Supabase sync error: \(error)")
+            print("NyoraSync sync error: \(error)")
             statusMessage = "Sync failed: \(error.localizedDescription)"
         }
     }
 
-    func supabaseRestoreFromCloud() async {
-        isSupabaseSyncing = true
+    func nyoraSyncRestoreFromCloud() async {
+        isNyoraSyncing = true
         statusMessage = "Restoring your library..."
-        defer { isSupabaseSyncing = false }
+        defer { isNyoraSyncing = false }
         do {
-            try await helper.supabaseRestoreFromCloud()
-            await refreshSupabaseStatus()
+            try await helper.nyoraSyncRestoreFromCloud()
+            await refreshNyoraSyncStatus()
             await reloadAllDataAfterSync()
             statusMessage = "Restore complete"
         } catch {
-            print("Supabase restore error: \(error)")
+            print("NyoraSync restore error: \(error)")
             statusMessage = "Restore failed: \(error.localizedDescription)"
         }
     }
 
-    func supabaseHasLocalData() async -> Bool {
-        (try? await helper.supabaseHasLocalData()) ?? false
+    func nyoraSyncHasLocalData() async -> Bool {
+        (try? await helper.nyoraSyncHasLocalData()) ?? false
     }
 
     private func reloadAllDataAfterSync() async {
@@ -1796,7 +2064,16 @@ extension AppState {
         await reloadBookmarks()
         await reloadUpdates()
         await reloadCategories()
-        await refreshSources()
+        // Adopt the engine's merged installed set: source-prefs sync applied the pulled
+        // `is_enabled` to the engine DB, so ADOPT that as the client curated set — otherwise the
+        // client-side overlay would re-impose the pre-sync set and silently drop pulled changes.
+        if let fresh = try? await helper.fetchSources() {
+            curatedSourceIds = Set(fresh.filter(\.isInstalled).map(\.id))
+            persistCuratedSources()
+            setSources(fresh)
+        } else {
+            await refreshSources()
+        }
     }
 
     // MARK: - Backup

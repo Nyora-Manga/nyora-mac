@@ -4,7 +4,6 @@ import SwiftUI
 @MainActor
 struct DownloadsView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showSettings = false
     @State private var maxConcurrent: Int = 3
@@ -19,9 +18,7 @@ struct DownloadsView: View {
     }
 
     var body: some View {
-        ZStack {
-            backdrop
-
+        Group {
             if appState.downloads.isEmpty {
                 EmptyStateView(
                     icon: "arrow.down.circle",
@@ -29,54 +26,26 @@ struct DownloadsView: View {
                     message: "Chapters you download for offline reading will appear here."
                 )
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("Downloads")
-                            .font(.system(size: 12, weight: .semibold))
-                            .kerning(0.6)
-                            .textCase(.uppercase)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 24)
-
-                        // Flat rows over a faint vertical gradient section background,
-                        // separated by thin hairline dividers — no boxy cards.
-                        VStack(spacing: 0) {
-                            ForEach(Array(sortedDownloads.enumerated()), id: \.element.id) { index, download in
-                                if index > 0 {
-                                    Divider()
-                                        .opacity(0.4)
-                                        .padding(.leading, 24)
-                                }
-                                DownloadRow(download: download)
-                            }
-                        }
-                        // Grouped downloads panel → native Liquid Glass card
-                        // (replaces the faux primary-opacity gradient fill).
-                        .glassCard(cornerRadius: 14)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
+                // The pane no longer draws its own "Downloads" caption — RootView
+                // already sets .navigationTitle, so the in-pane header was a duplicate.
+                List {
+                    ForEach(sortedDownloads, id: \.id) { download in
+                        DownloadRow(download: download)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                            .listRowSeparator(.hidden)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
-        .overlay(alignment: .topTrailing) {
+        .toolbar {
             Button { showSettings.toggle() } label: {
-                Image(systemName: "gearshape")
-                    .imageScale(.large)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .contentShape(Circle())
-                    // Circular floating glass FAB (interactive), routed through
-                    // the shared helper so reduce-transparency is respected.
-                    .adaptiveGlass(.circle, interactive: true)
+                Label("Download Settings", systemImage: "gearshape")
             }
-            .buttonStyle(.plain)
             .help("Download settings")
-            .padding(.top, 22)
-            .padding(.trailing, 22)
-            .popover(isPresented: $showSettings, arrowEdge: .top) { settingsPopover }
+            .popover(isPresented: $showSettings, arrowEdge: .bottom) { settingsPopover }
         }
         .task {
             await appState.reloadDownloads()
@@ -126,23 +95,6 @@ struct DownloadsView: View {
         .padding(18)
         .frame(width: 280)
     }
-
-    private var backdrop: some View {
-        ZStack {
-            Color.appBackground
-            if colorScheme == .dark {
-                RadialGradient(
-                    colors: [Color.appAccent.opacity(0.10), Color.clear],
-                    center: .topLeading, startRadius: 10, endRadius: 360
-                )
-                RadialGradient(
-                    colors: [Color.appAccent.opacity(0.07), Color.clear],
-                    center: .bottom, startRadius: 0, endRadius: 280
-                )
-            }
-        }
-        .ignoresSafeArea()
-    }
 }
 
 // MARK: - DownloadRow
@@ -153,69 +105,59 @@ private struct DownloadRow: View {
     @EnvironmentObject var appState: AppState
     private var canRetry: Bool { download.status == "FAILED" || download.status == "CANCELLED" }
 
+    /// Chapter, status and any failure detail collapsed onto ONE secondary line —
+    /// the system list idiom is a title plus a single subtitle.
+    private var subtitle: String {
+        var parts: [String] = [download.chapterTitle, statusLabel]
+        if download.failedPages > 0 { parts.append("\(download.failedPages) failed") }
+        if download.isTerminal, let error = download.error, !error.isEmpty { parts.append(error) }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: statusIcon)
-                .font(.system(size: 18, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(statusColor)
-                .frame(width: 26)
+                .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(download.mangaTitle)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text(download.chapterTitle)
-                    .font(.system(size: 12))
+                Text(subtitle)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
+                // Accent survives as a tint only.
                 if !download.isTerminal {
                     ProgressView(value: download.progressFraction)
                         .progressViewStyle(.linear)
                         .tint(Color.appAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 2)
-                } else if let error = download.error, !error.isEmpty {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(statusLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(statusColor)
-                Text("\(download.completedPages)/\(download.totalPages)")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                if download.failedPages > 0 {
-                    Text("\(download.failedPages) failed")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red.opacity(0.85))
-                }
-            }
+            Spacer(minLength: 12)
+
+            Text("\(download.completedPages)/\(download.totalPages)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
 
             if canRetry {
                 Button {
                     Task { await appState.retryDownload(download) }
                 } label: {
-                    Image(systemName: "arrow.clockwise.circle.fill")
-                        .font(.system(size: 18))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(Color.appAccent)
+                    Label("Retry", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
                 .help("Retry download")
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
         .contentShape(Rectangle())
     }
 

@@ -165,6 +165,16 @@ struct ReaderSettingsSheet: View {
 
                 Divider()
 
+                actionRow(
+                    icon: appState.colorizeModeOn ? "paintbrush.pointed.fill" : "paintbrush.pointed",
+                    title: appState.colorizeModeOn ? "Colorization On (tap to disable)" : "Colorize this chapter",
+                    subtitle: colorizeSubtitle
+                ) {
+                    appState.toggleColorize()
+                }
+
+                Divider()
+
                 toggleRow(
                     icon: "hand.tap",
                     title: "Tap zones for paging",
@@ -232,7 +242,22 @@ struct ReaderSettingsSheet: View {
         if appState.translateModeOn {
             return "Auto-translating every page of this chapter"
         }
-        return "OCR → Apple Intelligence refine → Google Translate"
+        return "Native OCR (GPU) → Google Translate → optional BYOK LLM refine"
+    }
+
+    private var colorizeSubtitle: String {
+        switch appState.colorizer.modelState {
+        case .downloading(let p): return "Downloading AI model… \(Int(p * 100))%"
+        case .failed(let m):      return "Failed: \(m)"
+        default: break
+        }
+        if appState.colorizer.isRunning {
+            let done = appState.colorizer.completedCount
+            let total = appState.colorizer.totalCount
+            return total > 0 ? "Colorizing pages… \(done)/\(total)" : "Colorizing pages…"
+        }
+        if appState.colorizeModeOn { return "Every page colorized on device" }
+        return "manga-colorization-v2 · on-device (~62 MB model)"
     }
 
     private var autoScrollSubtitle: String {

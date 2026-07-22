@@ -1,4 +1,128 @@
 import SwiftUI
+import AppKit
+
+// MARK: - Window vibrancy (macOS 26 "glass everywhere")
+
+/// The native window-vibrancy backing — an `NSVisualEffectView` with `.behindWindow`
+/// blending, so the desktop blurs through the whole window the way Finder / Mail do on
+/// macOS 26. This is the ONLY correct way to get real system glass as a pane background;
+/// a translucent `Color`/`Material` layer only tints, it doesn't sample the desktop.
+///
+/// It also clears the window's own opaque background — SwiftUI paints one by default, and
+/// left in place it sits in front of the vibrancy and defeats it.
+struct WindowGlass: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .underWindowBackground
+    /// When true the window is transparent so the desktop blurs through (native
+    /// Apple look). When false the window is a SOLID opaque colour (flat theme).
+    var glass: Bool = false
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+        context.coordinator.attach(effectView: view, glass: glass)
+    }
+
+    /// Owns the window config and — crucially — RE-APPLIES it on full-screen
+    /// enter/exit. macOS resets the window backing colour and re-materialises the
+    /// toolbar when a window enters full screen, so a one-shot updateNSView isn't
+    /// enough: without re-applying, the flat theme's opaque black is dropped and
+    /// the toolbar strip renders system grey. These observers fix that.
+    @MainActor
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private weak var effectView: NSVisualEffectView?
+        private var glass = false
+        private var observers: [NSObjectProtocol] = []
+
+        func attach(effectView: NSVisualEffectView, glass: Bool) {
+            self.effectView = effectView
+            self.glass = glass
+            let win = effectView.window
+            if win !== window {
+                removeObservers()
+                window = win
+                if let win {
+                    let nc = NotificationCenter.default
+                    for name: NSNotification.Name in [
+                        NSWindow.didEnterFullScreenNotification,
+                        NSWindow.didExitFullScreenNotification,
+                        NSWindow.didBecomeKeyNotification,
+                        NSWindow.didResizeNotification,
+                    ] {
+                        observers.append(nc.addObserver(forName: name, object: win, queue: .main) { [weak self] _ in
+                            MainActor.assumeIsolated { self?.apply() }
+                        })
+                    }
+                }
+            }
+            apply()
+        }
+
+        func apply() {
+            guard let window else { return }
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            if !window.styleMask.contains(.fullSizeContentView) {
+                window.styleMask.insert(.fullSizeContentView)
+            }
+            if glass {
+                // Native vibrancy: clear backing so the desktop blurs through.
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                effectView?.isHidden = false
+            } else {
+                // Flat opaque theme: SOLID window background. This is the full-screen
+                // fix — a transparent window there reveals system grey behind the
+                // toolbar strip; an opaque black/white window paints it correctly.
+                window.isOpaque = true
+                window.backgroundColor = NSColor(Color.appBackground)
+                effectView?.isHidden = true
+            }
+            if let content = window.contentView { effectView?.frame = content.bounds }
+            effectView?.autoresizingMask = [.width, .height]
+        }
+
+        private func removeObservers() {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers.removeAll()
+        }
+    }
+}
+
+extension View {
+    /// Use the native window glass as this view's background (fills past safe areas).
+    /// An optional `tint` washes the chosen colour-scheme accent over the vibrancy so the
+    /// glass takes on the theme colour; pass nil (Dynamic scheme) to leave it neutral.
+    func windowGlassBackground(
+        tint: Color? = nil,
+        _ material: NSVisualEffectView.Material = .underWindowBackground
+    ) -> some View {
+        // Glass mode (native Apple look): keep the WindowGlass vibrancy — the desktop
+        // blurs through the panes like Finder, with only a faint accent wash.
+        // Flat mode (default): paint an OPAQUE solid background (black in dark / white
+        // in light) over the (hidden) glass, so nothing bleeds through.
+        background {
+            ZStack {
+                WindowGlass(material: material, glass: NyoraTheme.glassMode)
+                if NyoraTheme.glassMode {
+                    if let tint { tint.opacity(0.05) }
+                } else {
+                    Color.appBackground
+                }
+            }
+            .ignoresSafeArea()
+        }
+    }
+}
 
 // MARK: - App Accent Theme
 //
@@ -10,12 +134,29 @@ import SwiftUI
 enum NyoraTheme {
     /// Mutated only on the main actor (from ReaderPrefs); reads are cheap.
     nonisolated(unsafe) static var accent: Color = .red
+    /// Native-glass window/pane vibrancy toggle (mirrors `ReaderPrefs.glassMode`).
+    /// false = flat opaque background (default); true = system vibrancy / Apple look.
+    nonisolated(unsafe) static var glassMode: Bool = false
 }
 
 extension Color {
     /// The user-selected app accent. Use this everywhere instead of
     /// `Color.accentColor` so the accent setting drives the entire UI.
     static var appAccent: Color { NyoraTheme.accent }
+
+    /// A foreground colour that reads on top of `appAccent` — for glyphs and labels
+    /// sitting on an accent-tinted surface (`adaptiveGlass(_:tint: .appAccent)`, prominent
+    /// buttons). Drawing `appAccent` on such a surface makes it invisible.
+    ///
+    /// Derived from the accent's luminance rather than hardcoded: the accent is
+    /// user-selectable and ranges from near-white (Yuki) to deep blue (Totoro), so no
+    /// single fixed colour works for every theme.
+    static var onAccent: Color {
+        let ns = NSColor(NyoraTheme.accent).usingColorSpace(.sRGB)
+        guard let ns else { return .white }
+        let luminance = 0.299 * ns.redComponent + 0.587 * ns.greenComponent + 0.114 * ns.blueComponent
+        return luminance > 0.55 ? Color(white: 0.08) : .white
+    }
 
     /// Hex initializer — supports "#RRGGBB" / "RRGGBB" (and 8-digit alpha).
     init?(hex: String) {
@@ -49,14 +190,26 @@ extension Color {
 
 // MARK: - Adaptive Color Tokens
 extension Color {
-    /// Main app/view background — adapts to dark (near-black) and light mode automatically.
-    static var appBackground: Color { Color(.windowBackgroundColor) }
+    private static func dynamic(dark: NSColor, light: NSColor) -> Color {
+        Color(NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
 
-    /// Elevated card surface — slightly lighter than appBackground.
-    static var cardSurface: Color { Color(.controlBackgroundColor) }
+    /// Main app/view background — pure BLACK in dark mode, pure WHITE in light
+    /// mode. No system grey, no wallpaper-through vibrancy.
+    static var appBackground: Color { dynamic(dark: .black, light: .white) }
+
+    /// Elevated card surface — a hair off the background so cards read (plus their
+    /// hairline border), while staying black-in-dark / white-in-light.
+    static var cardSurface: Color {
+        dynamic(dark: NSColor(white: 0.10, alpha: 1), light: .white)
+    }
 
     /// Separator/border color — adapts to dark/light.
-    static var adaptiveSeparator: Color { Color(.separatorColor) }
+    static var adaptiveSeparator: Color {
+        dynamic(dark: NSColor(white: 1, alpha: 0.12), light: NSColor(white: 0, alpha: 0.12))
+    }
 }
 
 @MainActor

@@ -12,37 +12,73 @@ struct CatalogSheet: View {
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
-        ZStack {
-            Color(.windowBackgroundColor)
-                .ignoresSafeArea()
-
-            LinearGradient(
-                colors: [Color.appAccent.opacity(0.04), .clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                header
-                Divider()
-                    .background(Color.primary.opacity(0.07))
-
+        NavigationStack {
+            // No accent wash, no aurora header, no gradient hairlines — the sheet
+            // takes the system background and a real navigation title.
+            Group {
                 if appState.isCatalogLoading && appState.catalog.isEmpty {
                     loadingList
                 } else {
                     list
                 }
+            }
+            .navigationTitle("Add Sources")
+            .searchable(
+                text: $search,
+                placement: .toolbar,
+                prompt: "Search by name"
+            )
+            .searchFocused($isSearchFocused)
+            // Finder's status bar: the shown / installed / total counts stay, as
+            // plain secondary text instead of a gradient-separated footer.
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Text(footerStatText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .toolbar {
+                ToolbarItem {
+                    Menu {
+                        Picker("Language", selection: $languageFilter) {
+                            Text("All languages").tag("all")
+                            Divider()
+                            ForEach(languages, id: \.self) { lang in
+                                Text(lang.uppercased()).tag(lang)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } label: {
+                        Label(
+                            languageFilter == "all" ? "All" : languageFilter.uppercased(),
+                            systemImage: "globe"
+                        )
+                    }
+                    .help("Filter by language")
+                }
 
-                Divider()
-                    .background(Color.primary.opacity(0.07))
-                LinearGradient(
-                    colors: [.clear, Color.primary.opacity(0.10), .clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(height: 0.5)
-                footer
+                ToolbarItem {
+                    if appState.isCatalogLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button {
+                            Task { await appState.reloadCatalogEntries() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .help("Refresh catalog")
+                    }
+                }
+
+                ToolbarItem {
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.escape, modifiers: [])
+                }
             }
         }
         .frame(
@@ -57,149 +93,20 @@ struct CatalogSheet: View {
         }
     }
 
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            Text("Add Sources")
-                .font(.system(.title2, design: .rounded, weight: .bold))
-                .foregroundStyle(.primary)
-
-            Spacer()
-
-            // Dark pill search field
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.primary.opacity(0.40))
-                TextField("Search by name", text: $search)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.primary)
-                    .focused($isSearchFocused)
-                    .onTapGesture { isSearchFocused = true }
-                if !search.isEmpty {
-                    Button {
-                        withAnimation(.animeSpring) { search = "" }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.primary.opacity(0.30))
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .frame(minWidth: 140, idealWidth: 210, maxWidth: 280)
-            .background(
-                Capsule()
-                    .fill(Color.primary.opacity(0.06))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(
-                                Color.primary.opacity(isSearchFocused ? 0.20 : 0.08),
-                                lineWidth: 0.5
-                            )
-                    )
-            )
-            .animation(.glass, value: isSearchFocused)
-
-            // Language picker as glass chip
-            Menu {
-                Button("All languages") { languageFilter = "all" }
-                Divider()
-                ForEach(languages, id: \.self) { lang in
-                    Button(lang.uppercased()) { languageFilter = lang }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 11, weight: .medium))
-                    Text(languageFilter == "all" ? "All" : languageFilter.uppercased())
-                        .font(.system(size: 12, weight: .semibold))
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .opacity(0.55)
-                }
-                .foregroundStyle(.primary.opacity(0.80))
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(Color.primary.opacity(0.07))
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                        )
-                )
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-
-            // xmark dismiss button — borderless secondary
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-            .contentShape(Circle())
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .background(
-            // Layered aurora — bright accent spot topLeading + dim spot
-            // bottomTrailing, single accent hue, behind the header content
-            ZStack {
-                RadialGradient(
-                    colors: [
-                        Color.appAccent.opacity(0.12),
-                        Color.appAccent.opacity(0.05),
-                        Color.appAccent.opacity(0.02),
-                        .clear
-                    ],
-                    center: .topLeading,
-                    startRadius: 0,
-                    endRadius: 320
-                )
-                RadialGradient(
-                    colors: [
-                        Color.appAccent.opacity(0.06),
-                        Color.appAccent.opacity(0.02),
-                        .clear
-                    ],
-                    center: .bottomTrailing,
-                    startRadius: 0,
-                    endRadius: 260
-                )
-            }
-            .allowsHitTesting(false)
-        )
-    }
-
     // MARK: Live List
 
     private var list: some View {
         List {
-            LazyVStack(spacing: 4) {
-                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, entry in
-                    CatalogRow(entry: entry) {
-                        Task { await appState.installFromCatalog(entry) }
-                    }
-                    .animeEntrance(delay: Double(min(index, 12)) * 0.04)
+            ForEach(filtered, id: \.id) { entry in
+                CatalogRow(entry: entry) {
+                    Task { await appState.installFromCatalog(entry) }
                 }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                .listRowSeparator(.hidden)
             }
-            .padding(10)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets())
         }
-        .listStyle(.plain)
+        .listStyle(.inset)
         .scrollContentBackground(.hidden)
     }
 
@@ -207,53 +114,15 @@ struct CatalogSheet: View {
 
     private var loadingList: some View {
         List {
-            LazyVStack(spacing: 4) {
-                ForEach(0..<6, id: \.self) { index in
-                    ShimmerRow()
-                        .animeEntrance(delay: Double(index) * 0.06)
-                }
+            ForEach(0..<6, id: \.self) { _ in
+                ShimmerRow()
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                    .listRowSeparator(.hidden)
             }
-            .padding(10)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets())
         }
-        .listStyle(.plain)
+        .listStyle(.inset)
         .scrollContentBackground(.hidden)
-    }
-
-    // MARK: Footer
-
-    private var footer: some View {
-        HStack(spacing: 0) {
-            Text(footerStatText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            Button {
-                Task { await appState.reloadCatalogEntries() }
-            } label: {
-                HStack(spacing: 5) {
-                    if appState.isCatalogLoading {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(.primary.opacity(0.6))
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    Text(appState.isCatalogLoading ? "Refreshing…" : "Refresh")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(.primary.opacity(appState.isCatalogLoading ? 0.40 : 0.75))
-            }
-            .buttonStyle(.borderless)
-            .disabled(appState.isCatalogLoading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     // MARK: Helpers
@@ -294,8 +163,6 @@ private struct CatalogRow: View {
     let entry: HelperCatalogEntry
     let onInstall: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
         HStack(spacing: 12) {
             iconZone
@@ -303,114 +170,34 @@ private struct CatalogRow: View {
             Spacer(minLength: 8)
             actionZone
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    isHovered
-                        ? LinearGradient(
-                            colors: [Color.primary.opacity(0.08), Color.primary.opacity(0.03)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                        : LinearGradient(
-                            colors: [Color.primary.opacity(0.03), Color.primary.opacity(0.03)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    isHovered
-                        ? LinearGradient(
-                            colors: [Color.appAccent.opacity(0.20), Color.primary.opacity(0.06)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        : LinearGradient(
-                            colors: [Color.primary.opacity(0.18), Color.primary.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                    lineWidth: 0.6
-                )
-        )
-        .scaleEffect(isHovered ? 1.01 : 1.0)
-        .animation(.spring(response: 0.30, dampingFraction: 0.75), value: isHovered)
-        .onHover { isHovered = $0 }
+        .contentShape(Rectangle())
     }
 
-    // Left icon: 36x36 RoundedRect with gradient bg
+    // Plain hierarchical symbol — the gradient-filled tile with its radial
+    // highlight spot is gone; orange still marks a broken source.
     private var iconZone: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    entry.isBroken
-                        ? LinearGradient(
-                            colors: [Color.orange.opacity(0.22), Color.orange.opacity(0.08)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        : LinearGradient(
-                            colors: [Color.appAccent.opacity(0.22), Color.appAccent.opacity(0.08)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                )
-                // TopLeading radial highlight spot for badge depth
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    (entry.isBroken ? Color.orange : Color.appAccent).opacity(0.30),
-                                    .clear
-                                ],
-                                center: .topLeading,
-                                startRadius: 0,
-                                endRadius: 30
-                            )
-                        )
-                )
-
-            Image(
-                systemName: entry.isBroken
-                    ? "exclamationmark.triangle"
-                    : "puzzlepiece.extension"
-            )
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(entry.isBroken ? Color.orange : Color.appAccent)
-            .symbolRenderingMode(.hierarchical)
-        }
-        .frame(width: 36, height: 36)
+        Image(
+            systemName: entry.isBroken
+                ? "exclamationmark.triangle"
+                : "puzzlepiece.extension"
+        )
+        .symbolRenderingMode(.hierarchical)
+        .foregroundStyle(entry.isBroken ? Color.orange : Color.appAccent)
+        .frame(width: 20)
     }
 
-    // Middle: name + optional broken badge, then lang · engine · contentType
+    // Name (+ broken marker), then ONE secondary line.
     private var infoZone: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(entry.name)
-                    .font(.subheadline.bold())
+                    .font(.body.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 if entry.isBroken {
-                    Text("BROKEN")
-                        .font(.system(size: 9, weight: .black))
-                        .tracking(0.8)
+                    Text("Broken")
+                        .font(.caption)
                         .foregroundStyle(.orange)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule()
-                                .fill(Color.orange.opacity(0.16))
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(Color.orange.opacity(0.28), lineWidth: 0.5)
-                                )
-                        )
                 }
             }
             Text("\(entry.lang.uppercased()) · \(entry.contentType)")
@@ -420,48 +207,20 @@ private struct CatalogRow: View {
         }
     }
 
-    // Right: green checkmark if installed, else "Get" borderedProminent small
+    // Right: checkmark if installed, else a stock prominent "Get".
     @ViewBuilder
     private var actionZone: some View {
         if entry.isInstalled {
             Image(systemName: "checkmark.circle.fill")
                 .imageScale(.medium)
                 .foregroundStyle(.green)
-                .shadow(color: Color.green.opacity(0.6), radius: 6)
         } else {
-            InstallButton(action: onInstall)
-        }
-    }
-}
-
-// MARK: - InstallButton
-
-@MainActor
-private struct InstallButton: View {
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        ZStack {
-            Button("Get") {
-                action()
-            }
+            Button("Get", action: onInstall)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .tint(Color.appAccent)
-
-            LinearGradient(
-                colors: [Color.appAccent.opacity(0.15), .clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .clipShape(Capsule())
-            .allowsHitTesting(false)
+                .fixedSize()
         }
-        .fixedSize()
-        .scaleEffect(isHovered ? 1.06 : 1.0)
-        .animation(.spring(response: 0.25, dampingFraction: 0.70), value: isHovered)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -470,9 +229,9 @@ private struct InstallButton: View {
 @MainActor
 private struct ShimmerRow: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(Color.primary.opacity(0.04))
             .shimmer()
-            .frame(height: 64)
+            .frame(height: 44)
     }
 }

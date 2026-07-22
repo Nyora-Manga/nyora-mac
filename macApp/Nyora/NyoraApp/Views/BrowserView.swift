@@ -169,7 +169,9 @@ struct BrowserView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.appBackground.ignoresSafeArea())
+        // No pane background of our own: RootView's detail column already lays
+        // down `Color.appBackground`. Painting it again here was a second,
+        // redundant opaque fill over the system surface.
     }
 
     // MARK: Top bar
@@ -230,15 +232,14 @@ struct BrowserView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// Stock borderless button. The system supplies the accent tint, the hover
+    /// highlight and the disabled dimming that this used to hand-roll with a
+    /// `Color.secondary.opacity(0.4)` foreground.
     private func navButton(systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button { action() } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(enabled ? Color.appAccent : Color.secondary.opacity(0.4))
-                .frame(width: 26, height: 26)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .disabled(!enabled)
     }
 
@@ -246,22 +247,17 @@ struct BrowserView: View {
 
     @ViewBuilder
     private var progressBar: some View {
+        // Stock determinate bar: the system draws the track, the fill and the
+        // value animation. The old hand-rolled GeometryReader + gradient
+        // rectangle is gone; the accent survives as a plain tint. Height is
+        // reserved in both branches so the chrome doesn't jump on load.
         if isLoading && estimatedProgress > 0 && estimatedProgress < 1 {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.appAccent, Color.appAccent.opacity(0.6)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: geo.size.width * CGFloat(estimatedProgress))
-                    .animation(.easeOut(duration: 0.2), value: estimatedProgress)
-            }
-            .frame(height: 2)
+            ProgressView(value: estimatedProgress)
+                .progressViewStyle(.linear)
+                .tint(Color.appAccent)
+                .frame(height: 4)
         } else {
-            Color.clear.frame(height: 2)
+            Color.clear.frame(height: 4)
         }
     }
 
@@ -295,36 +291,15 @@ struct BrowserView: View {
         }
     }
 
+    /// The shared empty state, exactly as every other pane uses it. The tinted
+    /// radial-gradient badge and the hand-drawn "Browser" heading are gone —
+    /// that heading only duplicated the toolbar title RootView already sets.
     private var startPage: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [Color.appAccent.opacity(0.18), Color.appAccent.opacity(0.05)],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: 40
-                        )
-                    )
-                    .frame(width: 80, height: 80)
-                Image(systemName: "globe")
-                    .font(.system(size: 34))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.appAccent)
-            }
-            VStack(spacing: 6) {
-                Text("Browser")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
-                Text("Type an address or a search above to get started.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 320)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(
+            icon: "globe",
+            title: "Start Browsing",
+            message: "Type an address or a search above to get started."
+        )
     }
 
     // MARK: Address handling
@@ -400,7 +375,8 @@ struct InAppWebSheet: View {
         }
         .frame(minWidth: 600, idealWidth: 900, minHeight: 440, idealHeight: 680)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.appBackground.ignoresSafeArea())
+        // Let the sheet keep the system's own window background rather than
+        // stacking another opaque fill on top of it.
     }
 
     private var header: some View {
@@ -457,22 +433,17 @@ struct InAppWebSheet: View {
 
     @ViewBuilder
     private var progressBar: some View {
+        // Stock determinate bar: the system draws the track, the fill and the
+        // value animation. The old hand-rolled GeometryReader + gradient
+        // rectangle is gone; the accent survives as a plain tint. Height is
+        // reserved in both branches so the chrome doesn't jump on load.
         if isLoading && estimatedProgress > 0 && estimatedProgress < 1 {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.appAccent, Color.appAccent.opacity(0.6)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: geo.size.width * CGFloat(estimatedProgress))
-                    .animation(.easeOut(duration: 0.2), value: estimatedProgress)
-            }
-            .frame(height: 2)
+            ProgressView(value: estimatedProgress)
+                .progressViewStyle(.linear)
+                .tint(Color.appAccent)
+                .frame(height: 4)
         } else {
-            Color.clear.frame(height: 2)
+            Color.clear.frame(height: 4)
         }
     }
 }

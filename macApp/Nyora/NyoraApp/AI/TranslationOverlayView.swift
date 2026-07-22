@@ -15,7 +15,7 @@ struct TranslationOverlayView: View {
     // Expand the cover rect beyond the OCR box to ensure full text erasure
     private let coverExpand: CGFloat = 6
     private let textPad: CGFloat = 5
-    private let minFont: CGFloat = 8
+    private let minFont: CGFloat = 6   // matches nyora-web's fitter floor
     private let maxFont: CGFloat = 38
     private var responseScale: CGFloat {
         CGFloat(appState.readerPrefs.translationResponseScale)
@@ -103,10 +103,18 @@ struct TranslationOverlayView: View {
 
     private func fitFontSize(text: String, box: CGRect) -> CGFloat {
         guard box.width > 0, box.height > 0 else { return minFont }
+        let words = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).map(String.init)
         let base = (box.height * 0.45).clamped(to: minFont...maxFont)
         for size in stride(from: base, through: minFont, by: -1) {
-            let h = measureHeight(text, fontSize: size * responseScale, maxWidth: box.width)
-            if h <= box.height { return size }
+            let scaled = size * responseScale
+            let h = measureHeight(text, fontSize: scaled, maxWidth: box.width)
+            // Height alone isn't enough: a unit wider than the box would wrap/break mid-word (or
+            // get truncated) while boundingRect still reports a fitting height. Require the widest
+            // unbreakable UNIT to fit too, so we shrink the font instead of splitting it — matching
+            // nyora-web's fitter. The unit is a whole Latin word, but a single CJK character
+            // (CJK wraps between characters, so a CJK run isn't one unbreakable token).
+            let longestUnit = words.map { unbreakableWidth($0, fontSize: scaled) }.max() ?? 0
+            if h <= box.height && longestUnit <= box.width * 0.95 { return size }
         }
         return minFont
     }
@@ -118,6 +126,31 @@ struct TranslationOverlayView: View {
         return (text as NSString)
             .boundingRect(with: size, options: [.usesLineFragmentOrigin], attributes: attrs)
             .height
+    }
+
+    private func measureWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        return (text as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// Width of the widest unbreakable unit in `word`: the whole word for Latin, but a single
+    /// character for CJK (which wraps between characters), so CJK targets don't over-shrink.
+    private func unbreakableWidth(_ word: String, fontSize: CGFloat) -> CGFloat {
+        if word.unicodeScalars.contains(where: TextFit.isCJK) {
+            return word.map { measureWidth(String($0), fontSize: fontSize) }.max() ?? 0
+        }
+        return measureWidth(word, fontSize: fontSize)
+    }
+}
+
+/// Shared line-fitting helpers for the translation renderers.
+enum TextFit {
+    static func isCJK(_ s: Unicode.Scalar) -> Bool {
+        let v = s.value
+        return (0x4E00...0x9FFF).contains(v)   // CJK Unified Ideographs
+            || (0x3400...0x4DBF).contains(v)   // CJK Extension A
+            || (0x3040...0x30FF).contains(v)   // Hiragana + Katakana
+            || (0xAC00...0xD7AF).contains(v)   // Hangul syllables
     }
 }
 

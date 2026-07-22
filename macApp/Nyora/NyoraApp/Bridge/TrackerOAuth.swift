@@ -1,26 +1,25 @@
 import AuthenticationServices
 import AppKit
+import CryptoKit
 import Foundation
 
 /// Browser + password OAuth for the tracking services.
 ///
 /// AniList uses the implicit grant (token in the redirect fragment),
-/// MyAnimeList and Shikimori use the authorization-code grant (MyAnimeList
-/// with PKCE), and Kitsu uses a resource-owner password grant. Client IDs and
-/// secrets come from `TrackerService`, which mirrors the nyora-android
-/// `constants.xml` values.
+/// MyAnimeList, Shikimori, Bangumi and MangaBaka use the authorization-code
+/// grant (MyAnimeList with plain PKCE, MangaBaka with S256 PKCE), and Kitsu
+/// uses a resource-owner password grant. Client IDs / secrets come from
+/// `TrackerService` — Nyora's own registered OAuth apps.
 ///
-/// NOTE: the custom-scheme redirect (`nyora://oauth`) must be registered in
-/// each provider's developer console (AniList app redirect URL, MyAnimeList
-/// app redirect, Shikimori OAuth application redirect) for the browser flow to
-/// complete. Until that registration lands, the settings screen also exposes a
-/// manual access-token field so linking works today.
+/// Each service redirects to `nyora://<host>-auth` (the redirect its client is
+/// registered with). `ASWebAuthenticationSession` intercepts that scheme in
+/// its own session, so no app URL-scheme registration is needed. The settings
+/// screen also exposes a manual access-token field as a fallback.
 @MainActor
 final class TrackerOAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
     static let shared = TrackerOAuth()
 
     static let callbackScheme = "nyora"
-    static let redirectURI = "nyora://oauth"
 
     struct AuthResult: Sendable {
         let accessToken: String
@@ -81,7 +80,7 @@ final class TrackerOAuth: NSObject, ASWebAuthenticationPresentationContextProvid
         comps.queryItems = [
             URLQueryItem(name: "client_id", value: service.clientId),
             URLQueryItem(name: "response_type", value: "token"),
-            URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
+            URLQueryItem(name: "redirect_uri", value: service.redirectURI),
         ]
         guard let url = comps.url else { throw AuthError.failed("Bad authorize URL.") }
         let callback = try await presentAuth(url: url)
@@ -98,17 +97,18 @@ final class TrackerOAuth: NSObject, ASWebAuthenticationPresentationContextProvid
               var comps = URLComponents(url: authorize, resolvingAgainstBaseURL: false) else {
             throw AuthError.notSupported
         }
-        // MyAnimeList mandates PKCE; it only supports the "plain" method, so the
-        // challenge equals the verifier.
+        // PKCE where the client requires it: MyAnimeList uses "plain" (challenge
+        // == verifier), MangaBaka uses "S256" (base64url(SHA256(verifier))).
         let verifier = Self.randomCodeVerifier()
         var items: [URLQueryItem] = [
             URLQueryItem(name: "client_id", value: service.clientId),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
+            URLQueryItem(name: "redirect_uri", value: service.redirectURI),
         ]
-        if service == .myanimelist {
-            items.append(URLQueryItem(name: "code_challenge", value: verifier))
-            items.append(URLQueryItem(name: "code_challenge_method", value: "plain"))
+        if let pkce = service.pkceMethod {
+            let challenge = pkce == .s256 ? Self.s256Challenge(verifier) : verifier
+            items.append(URLQueryItem(name: "code_challenge", value: challenge))
+            items.append(URLQueryItem(name: "code_challenge_method", value: pkce == .s256 ? "S256" : "plain"))
         }
         if let scope = service.authScope {
             items.append(URLQueryItem(name: "scope", value: scope))
@@ -125,10 +125,10 @@ final class TrackerOAuth: NSObject, ASWebAuthenticationPresentationContextProvid
             "grant_type": "authorization_code",
             "client_id": service.clientId,
             "code": code,
-            "redirect_uri": Self.redirectURI,
+            "redirect_uri": service.redirectURI,
         ]
         if let secret = service.clientSecret { form["client_secret"] = secret }
-        if service == .myanimelist { form["code_verifier"] = verifier }
+        if service.pkceMethod != nil { form["code_verifier"] = verifier }
         return try await postToken(tokenURL, form: form, userAgent: service.requiresUserAgent)
     }
 
@@ -220,6 +220,15 @@ final class TrackerOAuth: NSObject, ASWebAuthenticationPresentationContextProvid
     private static func randomCodeVerifier() -> String {
         let charset = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         return String((0..<64).map { _ in charset[Int.random(in: 0..<charset.count)] })
+    }
+
+    /// RFC 7636 S256 code challenge: base64url(SHA256(verifier)).
+    private static func s256Challenge(_ verifier: String) -> String {
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        return Data(digest).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private static func formEncode(_ form: [String: String]) -> String {

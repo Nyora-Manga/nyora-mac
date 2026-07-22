@@ -87,7 +87,12 @@ final class TranslationSettings: ObservableObject {
     @Published var isEnabled: Bool = ud.bool(forKey: Keys.enabled) {
         didSet { Self.ud.set(isEnabled, forKey: Keys.enabled) }
     }
-    @Published var sourceLang: String = ud.string(forKey: Keys.sourceLang) ?? "AUTO" {
+    @Published var sourceLang: String = {
+        // OCR only supports Japanese / Chinese / Korean / English. Coerce any legacy
+        // value (e.g. "AUTO") to Japanese so the restricted picker always has a match.
+        let saved = ud.string(forKey: Keys.sourceLang) ?? ""
+        return sourceLanguages.contains(saved) ? saved : "Japanese"
+    }() {
         didSet { Self.ud.set(sourceLang, forKey: Keys.sourceLang) }
     }
     @Published var targetLang: String = ud.string(forKey: Keys.targetLang) ?? "English" {
@@ -101,6 +106,12 @@ final class TranslationSettings: ObservableObject {
     }
     @Published var model: String = ud.string(forKey: Keys.model) ?? "" {
         didSet { Self.ud.set(model, forKey: Keys.model) }
+    }
+    /// Series context / reference — character names, honorifics, terminology —
+    /// fed to the BYOK LLM so a chapter's translations stay consistent (mirrors
+    /// the web's `cfg.context`).
+    @Published var context: String = ud.string(forKey: Keys.context) ?? "" {
+        didSet { Self.ud.set(context, forKey: Keys.context) }
     }
     /// When true, the translate page bypasses the LLM API and uses only the
     /// on-device MT pipeline — so an empty API key shouldn't disable the
@@ -126,6 +137,7 @@ final class TranslationSettings: ObservableObject {
 
     static let providers: [Provider] = [
         Provider(id: "openai",    name: "OpenAI",       url: "https://api.openai.com/v1",          modelHint: "gpt-4o-mini"),
+        Provider(id: "anthropic", name: "Anthropic",    url: "https://api.anthropic.com",          modelHint: "claude-haiku-4-5-20251001"),
         Provider(id: "mistral",   name: "Mistral",      url: "https://api.mistral.ai/v1",          modelHint: "mistral-small-latest"),
         Provider(id: "groq",      name: "Groq",         url: "https://api.groq.com/openai/v1",     modelHint: "llama-3.3-70b-versatile"),
         Provider(id: "together",  name: "Together AI",  url: "https://api.together.xyz/v1",        modelHint: "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
@@ -147,10 +159,11 @@ final class TranslationSettings: ObservableObject {
 
     private static let ud = UserDefaults.standard
 
-    /// Compat shim. The LLM-refinement code path was removed in favour of
-    /// on-device Apple Intelligence refinement. Always returns `false` so
-    /// any leftover call site treats the pipeline as MT-only.
-    var hasLLMConfigured: Bool { false }
+    /// True once the user has entered a BYOK endpoint + API key — the LLM refine
+    /// step runs after Google MT when this is set (and not offline).
+    var hasLLMConfigured: Bool {
+        !effectiveEndpoint.isEmpty && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private enum Keys {
         static let enabled     = "nyora.ai.translate.enabled"
@@ -159,10 +172,15 @@ final class TranslationSettings: ObservableObject {
         static let endpoint    = "nyora.ai.translate.endpoint"
         static let apiKey      = "nyora.ai.translate.apiKey"
         static let model       = "nyora.ai.translate.model"
+        static let context     = "nyora.ai.translate.context"
         static let isOffline   = "nyora.ai.translate.isOffline"
         static let instant     = "nyora.ai.translate.instant"
         static let tier        = "nyora.ai.translate.tier"
     }
+
+    /// Source languages the OCR actually supports (manga-ocr = ja, PaddleOCR = zh/ko/en).
+    /// The source picker is restricted to these; the target can be any supported language.
+    static let sourceLanguages = ["Japanese", "Chinese", "Korean", "English"]
 
     static let supportedLanguages = [
         "AUTO", "English", "Japanese", "Chinese", "Korean",

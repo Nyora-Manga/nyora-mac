@@ -34,3 +34,6 @@ DerivedData/
 xcuserdata/
 .build/
 .env.sync
+
+# Local Claude Code session config
+.claude/
