@@ -17,13 +17,13 @@ A fast, free, ad-free, open-source manga reader — native to macOS, built from 
 [![Core ML](https://img.shields.io/badge/Core_ML-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://developer.apple.com/documentation/coreml)
 [![Homebrew](https://img.shields.io/badge/Homebrew-FBB040?style=for-the-badge&logo=homebrew&logoColor=black)](https://brew.sh)
 
-[![License: Apache 2.0](https://img.shields.io/github/license/Hasan72341/nyora-mac?color=blue)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/Hasan72341/nyora-mac?label=download&color=0ae448)](https://github.com/Hasan72341/nyora-mac/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Hasan72341/nyora-mac/total?color=9d95ff)](https://github.com/Hasan72341/nyora-mac/releases)
-[![Stars](https://img.shields.io/github/stars/Hasan72341/nyora-mac?style=social)](https://github.com/Hasan72341/nyora-mac/stargazers)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-0ae448?style=flat)](https://github.com/Hasan72341/nyora-mac/issues)
+[![License: Apache 2.0](https://img.shields.io/github/license/Nyora-Manga/nyora-mac?color=blue)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Nyora-Manga/nyora-mac?label=download&color=0ae448)](https://github.com/Nyora-Manga/nyora-mac/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Nyora-Manga/nyora-mac/total?color=9d95ff)](https://github.com/Nyora-Manga/nyora-mac/releases)
+[![Stars](https://img.shields.io/github/stars/Nyora-Manga/nyora-mac?style=social)](https://github.com/Nyora-Manga/nyora-mac/stargazers)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-0ae448?style=flat)](https://github.com/Nyora-Manga/nyora-mac/issues)
 
-[![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Hasan72341/nyora-mac/releases/latest)
+[![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Nyora-Manga/nyora-mac/releases/latest)
 [![Install via Homebrew](https://img.shields.io/badge/Install-Homebrew-FBB040?style=for-the-badge&logo=homebrew&logoColor=black)](#installation)
 [![Website](https://img.shields.io/badge/Website-nyora.pages.dev-FF4655?style=for-the-badge&logo=githubpages&logoColor=white)](https://nyora.pages.dev)
 [![Open Web App](https://img.shields.io/badge/Open-Web_App-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://nyoraweb.pages.dev)
@@ -178,11 +178,21 @@ What the macOS build does today:
 
 ## Installation
 
-Nyora for macOS runs on Apple Silicon only. Two ways in — pick whichever you prefer. No store account, no sign-up, nothing to buy.
+Nyora for macOS runs on Apple Silicon only. A few ways in — pick whichever you prefer. No store account, no sign-up, nothing to buy.
 
-### Homebrew (recommended)
+### One-line install (recommended)
 
-The easiest path, and the one that opens cleanly with no Gatekeeper prompt:
+Paste this into Terminal — it downloads Nyora, installs it to `/Applications`, and clears the download quarantine so it opens cleanly with **no "damaged" / "unidentified developer" prompt**:
+
+```bash
+curl -fsSL https://github.com/Nyora-Manga/nyora-mac/releases/latest/download/install.sh | bash
+```
+
+The build is ad-hoc signed (not Apple-notarised), so a plain download would be Gatekeeper-quarantined and macOS would refuse to open it. The installer removes that quarantine flag after install — which is what lets the valid ad-hoc signature launch normally. Re-run the same command any time to update.
+
+### Homebrew
+
+Also opens cleanly with no Gatekeeper prompt:
 
 ```bash
 brew tap Hasan72341/nyora
@@ -194,7 +204,7 @@ The `--no-quarantine` flag skips the quarantine attribute Gatekeeper would other
 
 ### Direct download (.dmg)
 
-Download `Nyora.dmg` from the [Releases page](https://github.com/Hasan72341/nyora-mac/releases/latest) and drag **Nyora** to your Applications folder.
+Download `Nyora.dmg` from the [Releases page](https://github.com/Nyora-Manga/nyora-mac/releases/latest) and drag **Nyora** to your Applications folder.
 
 Nyora is ad-hoc signed (not yet notarised), so on first launch macOS plays it safe and asks you to confirm. **This is expected, and it's safe** — the app is fully open-source and you can read every line of what you're running. You only do this once:
 
@@ -213,7 +223,7 @@ After that, Nyora launches normally like any other app.
 ### Updating
 
 - **Homebrew:** `brew upgrade --cask nyora`.
-- **Direct `.dmg`:** download the latest from [Releases](https://github.com/Hasan72341/nyora-mac/releases/latest) and replace the app in Applications.
+- **Direct `.dmg`:** download the latest from [Releases](https://github.com/Nyora-Manga/nyora-mac/releases/latest) and replace the app in Applications.
 
 ### Troubleshooting
 
@@ -222,10 +232,10 @@ After that, Nyora launches normally like any other app.
 
 ## Build from Source
 
-Building the full app requires **Xcode**, **JDK 17**, and the `nyora-shared` submodule — the shared Kotlin engine that ships as a bundled JVM helper. The engine is open-source and public ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0), so a complete from-scratch build resolves it automatically — engine included.
+Building the full app requires **Xcode**, **JDK 17**, and the `nyora-shared` submodule — the shared Kotlin engine that ships as a bundled JVM helper. The engine is open-source and public ([github.com/Nyora-Manga/nyora-shared](https://github.com/Nyora-Manga/nyora-shared), Apache-2.0), so a complete from-scratch build resolves it automatically — engine included.
 
 ```bash
-git clone --recurse-submodules https://github.com/Hasan72341/nyora-mac.git
+git clone --recurse-submodules https://github.com/Nyora-Manga/nyora-mac.git
 cd nyora-mac
 ./macApp/scripts/dev-launch.sh    # dev run
 ./macApp/scripts/build-dmg.sh     # → build/Nyora.dmg (ad-hoc signed, bundled JRE)
@@ -240,7 +250,7 @@ If you cloned without `--recurse-submodules`, initialise the submodule before bu
 git submodule update --init --recursive
 ```
 
-> **A note for contributors:** the `nyora-shared` engine submodule is a **public, open-source** repository ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Clone with `--recurse-submodules` and the whole stack — the Swift / SwiftUI app, the translation pipeline, and the shared Kotlin engine — builds from open source. Full-stack contributions are welcome, engine included. See [Contributing](#contributing) for what you can pick up today.
+> **A note for contributors:** the `nyora-shared` engine submodule is a **public, open-source** repository ([github.com/Nyora-Manga/nyora-shared](https://github.com/Nyora-Manga/nyora-shared), Apache-2.0). Clone with `--recurse-submodules` and the whole stack — the Swift / SwiftUI app, the translation pipeline, and the shared Kotlin engine — builds from open source. Full-stack contributions are welcome, engine included. See [Contributing](#contributing) for what you can pick up today.
 
 ## Configuration
 
@@ -277,13 +287,13 @@ One library. Every device. Sync ties it all together.
 
 | Platform | Repo | Get it |
 |---|---|---|
-| macOS | **nyora-mac** *(you are here)* | [.dmg / `brew`](https://github.com/Hasan72341/nyora-mac/releases/latest) |
+| macOS | **nyora-mac** *(you are here)* | [.dmg / `brew`](https://github.com/Nyora-Manga/nyora-mac/releases/latest) |
 | Android | [nyora-android](https://github.com/Hasan72341/nyora-android) | [APK](https://github.com/Hasan72341/nyora-android/releases/latest) |
 | Windows | [nyora-windows](https://github.com/Hasan72341/nyora-windows) | [.exe (x64/ARM64)](https://github.com/Hasan72341/nyora-windows/releases/latest) |
 | Linux | [nyora-linux](https://github.com/Hasan72341/nyora-linux) | [deb · rpm · curl](https://github.com/Hasan72341/nyora-linux/releases/latest) |
 | iOS / iPadOS | [nyora-ios](https://github.com/Hasan72341/nyora-ios) | [sideload IPA](https://github.com/Hasan72341/nyora-ios/releases/latest) |
 | Web | [nyora-web](https://github.com/Hasan72341/nyora-web) | [nyoraweb.pages.dev](https://nyoraweb.pages.dev) |
-| Shared engine | [nyora-shared](https://github.com/Hasan72341/nyora-shared) | open-source Kotlin engine (Apache-2.0) — vendored as a submodule by the desktop ports |
+| Shared engine | [nyora-shared](https://github.com/Nyora-Manga/nyora-shared) | open-source Kotlin engine (Apache-2.0) — vendored as a submodule by the desktop ports |
 
 Every platform shares the same library and progress through cloud sync — sign in once and your collection is everywhere.
 
@@ -332,22 +342,22 @@ Sync is optional and free. You only create a Nyora Cloud account (email and pass
 macOS, Windows, Linux, Android, iOS / iPadOS and the Web — all of which share one library and reading progress through cloud sync. This repository is the macOS app (Apple Silicon only).
 
 **Can I contribute to the shared engine?**
-Yes. The cross-platform engine, `nyora-shared`, is now a public, open-source repository ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Clone this repo with `--recurse-submodules` and you can build and modify the whole stack — the Swift app, the translation pipeline, and the engine itself. Engine-level PRs (the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager) are welcome upstream. See [Contributing](#contributing).
+Yes. The cross-platform engine, `nyora-shared`, is now a public, open-source repository ([github.com/Nyora-Manga/nyora-shared](https://github.com/Nyora-Manga/nyora-shared), Apache-2.0). Clone this repo with `--recurse-submodules` and you can build and modify the whole stack — the Swift app, the translation pipeline, and the engine itself. Engine-level PRs (the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager) are welcome upstream. See [Contributing](#contributing).
 
 **How do I update?**
-If you installed via Homebrew, update with `brew upgrade --cask nyora`. If you installed the `.dmg` directly, download the latest from the [Releases page](https://github.com/Hasan72341/nyora-mac/releases/latest) and replace the app in Applications.
+If you installed via Homebrew, update with `brew upgrade --cask nyora`. If you installed the `.dmg` directly, download the latest from the [Releases page](https://github.com/Nyora-Manga/nyora-mac/releases/latest) and replace the app in Applications.
 
 ## Contributing
 
 Nyora is built in the open, and contributions are genuinely welcome — whether you write Swift, design, translate, test, or just file a good bug report. You do not need to be an expert, and you do not need to understand the whole codebase to make a real difference. If you have a Mac and a few minutes, there is something here you can start on today.
 
-**A note on the build:** the cross-platform engine lives in the `nyora-shared` submodule, which is **public and open-source** ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Clone with `--recurse-submodules` and a complete from-scratch build resolves it automatically — nothing held back. The part most contributions touch is the **Swift / SwiftUI app** and the **translation pipeline** in this repo, but the engine itself is open too, so full-stack changes are on the table.
+**A note on the build:** the cross-platform engine lives in the `nyora-shared` submodule, which is **public and open-source** ([github.com/Nyora-Manga/nyora-shared](https://github.com/Nyora-Manga/nyora-shared), Apache-2.0). Clone with `--recurse-submodules` and a complete from-scratch build resolves it automatically — nothing held back. The part most contributions touch is the **Swift / SwiftUI app** and the **translation pipeline** in this repo, but the engine itself is open too, so full-stack changes are on the table.
 
 ### Ways to Contribute
 
 You don't have to write code to help — every one of these moves the project forward:
 
-- **Report a bug.** Hit something odd? Open an [issue](https://github.com/Hasan72341/nyora-mac/issues) with what you did, what you expected, and what happened. A screenshot and your macOS version help a lot.
+- **Report a bug.** Hit something odd? Open an [issue](https://github.com/Nyora-Manga/nyora-mac/issues) with what you did, what you expected, and what happened. A screenshot and your macOS version help a lot.
 - **Suggest a feature or polish.** Ideas for the reader, translation UX, or settings are welcome — open an issue and describe the problem you want solved.
 - **Test releases.** Try a new `.dmg` or `brew` build and report whether it installs and runs cleanly on your Mac. Real-world install testing is genuinely valuable.
 - **Improve or translate the UI.** Better wording, clearer labels, or UI strings in your language all help — the interface lives in plain SwiftUI views (see [Where Things Live](#where-things-live)).
@@ -362,7 +372,7 @@ This is the contributor quickstart for working on the **macOS app** (distinct fr
 
 ```bash
 # 1. Clone with submodules
-git clone --recurse-submodules https://github.com/Hasan72341/nyora-mac.git
+git clone --recurse-submodules https://github.com/Nyora-Manga/nyora-mac.git
 cd nyora-mac
 
 # 2. Prerequisites: Xcode (Swift toolchain) and JDK 17
@@ -376,7 +386,7 @@ cd nyora-mac
 A few notes:
 
 - **UI, reader, and translation work** is fully approachable in this repo — these are Swift/SwiftUI and Core ML, no special setup needed beyond a normal clone.
-- **A complete from-scratch build** also resolves the `nyora-shared` engine submodule, which is public and open-source ([github.com/Hasan72341/nyora-shared](https://github.com/Hasan72341/nyora-shared), Apache-2.0). Everyone can build the whole stack, and engine-level changes — the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager — are open for PRs upstream.
+- **A complete from-scratch build** also resolves the `nyora-shared` engine submodule, which is public and open-source ([github.com/Nyora-Manga/nyora-shared](https://github.com/Nyora-Manga/nyora-shared), Apache-2.0). Everyone can build the whole stack, and engine-level changes — the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync, the downloads manager — are open for PRs upstream.
 
 If you cloned without submodules, run `git submodule update --init --recursive`. (For maintainers: bumping the engine is the usual `git submodule update --remote nyora-shared` followed by committing the new submodule pointer.)
 
@@ -391,7 +401,7 @@ A quick map so you can find your way around the macOS app:
 | `macApp/Nyora/NyoraApp/AI/` | The on-device translation pipeline — OCR, the MangaTranslator, painters and refiners (`MangaTranslator.swift`, `OcrProvider.swift`, `ChapterTranslator.swift`, `TranslationModels.swift`). |
 | `macApp/Nyora/NyoraApp/Bridge/` | The bridge to the bundled Kotlin helper and auth (`NyoraHelperBridge.swift`, `HelperLauncher.swift`). |
 | [`macApp/scripts/`](macApp/scripts) | Dev/build scripts (`dev-launch.sh`, `build-dmg.sh`) and the translation deep-dive (`README-translation.md`). |
-| [`nyora-shared/`](https://github.com/Hasan72341/nyora-shared) | The shared Kotlin engine — **public, open-source submodule** (Apache-2.0): source/parser runtime, loopback REST server, SQLDelight store, Nyora Cloud sync and downloads manager. PRs welcome upstream. |
+| [`nyora-shared/`](https://github.com/Nyora-Manga/nyora-shared) | The shared Kotlin engine — **public, open-source submodule** (Apache-2.0): source/parser runtime, loopback REST server, SQLDelight store, Nyora Cloud sync and downloads manager. PRs welcome upstream. |
 | [`docs/`](docs) | Screenshots and reference notes. |
 
 ### Good First Contributions
@@ -409,7 +419,7 @@ A few lightweight conventions keep reviews fast and friendly:
 
 - **Keep PRs focused.** One change per pull request is far easier to review and merge than a sprawling one.
 - **Describe the change.** Say what it does and why; link the issue it addresses if there is one. A before/after screenshot helps for anything visual.
-- **Open an issue first for big changes.** A quick discussion on [Issues](https://github.com/Hasan72341/nyora-mac/issues) saves everyone time before you write a lot of code.
+- **Open an issue first for big changes.** A quick discussion on [Issues](https://github.com/Nyora-Manga/nyora-mac/issues) saves everyone time before you write a lot of code.
 - **Be kind.** This is a community project maintained by people in their spare time. Assume good faith, and we'll do the same.
 
 There is no `CONTRIBUTING.md` or formal code of conduct file yet — the guidance above is it. Be respectful, keep it constructive, and you're welcome here.
