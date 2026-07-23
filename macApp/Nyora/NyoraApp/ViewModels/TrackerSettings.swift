@@ -55,11 +55,12 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Client secret where the provider's token exchange requires it.
-    /// AniList (implicit) and the PKCE public clients (MyAnimeList, MangaBaka)
-    /// don't use a secret.
+    /// AniList is a confidential authorization-code client (it issues a secret
+    /// and rejects the implicit grant); the PKCE public clients (MyAnimeList,
+    /// MangaBaka) don't use a secret.
     var clientSecret: String? {
         switch self {
-        case .anilist:     return nil
+        case .anilist:     return "1g354gn5JLiP0b0CyIJLk4SHCfq5d9Zip2ufxGHj"
         case .myanimelist: return nil
         case .mangabaka:   return nil
         case .kitsu:       return "54d7307928f63414defd96399fc31ba847961ceaecef3a5fd93144e960c0e151"
@@ -96,7 +97,10 @@ enum TrackerService: String, CaseIterable, Identifiable, Sendable {
 
     var grantKind: GrantKind {
         switch self {
-        case .anilist: return .implicit
+        // AniList's registered client 46413 is confidential (has a secret) and
+        // rejects response_type=token with "unsupported_grant_type"; use the
+        // authorization-code grant + secret exchange instead.
+        case .anilist: return .authorizationCode
         case .kitsu:   return .password
         case .myanimelist, .shikimori, .bangumi, .mangabaka: return .authorizationCode
         }
