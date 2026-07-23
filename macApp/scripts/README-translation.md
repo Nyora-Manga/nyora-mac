@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://nyora.pages.dev/icon.png" width="120" alt="Nyora icon" />
+<img src="https://nyora.xyz/icon.png" width="120" alt="Nyora icon" />
 
 # Nyora — TRANSLATE Pipeline (macOS)
 
@@ -12,9 +12,9 @@
 [![Core ML](https://img.shields.io/badge/Core_ML-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://developer.apple.com/documentation/coreml)
 [![Apple](https://img.shields.io/badge/Apple-000000?style=for-the-badge&logo=apple&logoColor=white)](https://developer.apple.com/documentation/vision)
 
-[![Website](https://img.shields.io/badge/Website-nyora.pages.dev-FF4655?style=for-the-badge&logo=githubpages&logoColor=white)](https://nyora.pages.dev)
-[![Open Web App](https://img.shields.io/badge/Open-Web_App-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://nyoraweb.pages.dev)
-[![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Hasan72341/nyora-mac/releases/latest)
+[![Website](https://img.shields.io/badge/Website-nyora.xyz-FF4655?style=for-the-badge&logo=githubpages&logoColor=white)](https://nyora.xyz)
+[![Open Web App](https://img.shields.io/badge/Open-Web_App-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://nyora.xyz)
+[![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Nyora-Manga/nyora-mac/releases/latest)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-D22128?style=for-the-badge&logo=apache&logoColor=white)](#license)
 [![Status](https://img.shields.io/badge/Status-Shipping_May_2026-2EA44F?style=for-the-badge)](#what-works-may-2026)
@@ -24,7 +24,7 @@
 
 ---
 
-> The honest, technical reference for the macOS Japanese TRANSLATE pipeline — exactly what runs when you press <kbd>⌘T</kbd>, with no marketing and no overstatement. For the consumer overview of Nyora and the other four pillars (DOWNLOAD, SOURCES, SYNC, OPEN-SOURCE), see the [product site](https://nyora.pages.dev).
+> The honest, technical reference for the macOS Japanese TRANSLATE pipeline — exactly what runs when you press <kbd>⌘T</kbd>, with no marketing and no overstatement. For the consumer overview of Nyora and the other four pillars (DOWNLOAD, SOURCES, SYNC, OPEN-SOURCE), see the [product site](https://nyora.xyz).
 
 ## What you get
 
@@ -39,7 +39,7 @@ A side-by-side translation sheet for the page you are reading: the original art 
 
 ## Install
 
-> [![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Hasan72341/nyora-mac/releases/latest) — grab the latest `.dmg` from the [Releases page](https://github.com/Hasan72341/nyora-mac/releases/latest), open it, and drag **Nyora** to your Applications folder. That's it.
+> [![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Nyora-Manga/nyora-mac/releases/latest) — grab the latest `.dmg` from the [Releases page](https://github.com/Nyora-Manga/nyora-mac/releases/latest), open it, and drag **Nyora** to your Applications folder. That's it.
 
 **"Nyora can't be opened because Apple cannot check it for malware" — this is expected, and it's safe.** Nyora ships as an open-source app that is not signed through Apple's paid notarisation service, so Gatekeeper shows that warning on first launch. It does not mean anything is wrong — it means macOS hasn't been told who the developer is. Because the entire source tree is public, you can audit exactly what the app does before trusting it. To open it the first time:
 
@@ -47,7 +47,7 @@ A side-by-side translation sheet for the page you are reading: the original art 
 2. **Right-click** (or Control-click) the app and choose **Open**.
 3. Click **Open** in the dialog that appears.
 
-You only need to do this once; after the first launch the app opens normally. (If you prefer Homebrew, you can install and update via `brew` from the [release page](https://github.com/Hasan72341/nyora-mac/releases/latest).)
+You only need to do this once; after the first launch the app opens normally. (If you prefer Homebrew, you can install and update via `brew` from the [release page](https://github.com/Nyora-Manga/nyora-mac/releases/latest).)
 
 Once installed, open a chapter, press <kbd>⌘T</kbd>, and the translation sheet opens.
 
@@ -245,10 +245,10 @@ The OCR ensemble targets Japanese, Simplified Chinese, Korean and English script
 Vision is excellent at horizontal and Latin text but weak at vertical Japanese. The bundled manga-ocr CoreML model (~210 MB) exists specifically to read tategaki in speech bubbles, which is why it ships alongside Vision rather than replacing it.
 
 **Can I contribute to the shared engine?**
-Yes. The shared Kotlin engine, [nyora-shared](https://github.com/Hasan72341/nyora-shared), is open-source and public under Apache-2.0. Contributions are welcome — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, and the downloads manager all live there, and PRs are reviewed like any other open repo. See [Development setup](#development-setup) for how it links into the macOS build.
+Yes. The shared Kotlin engine, [nyora-shared](https://github.com/Nyora-Manga/nyora-shared), is open-source and public under Apache-2.0. Contributions are welcome — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, and the downloads manager all live there, and PRs are reviewed like any other open repo. See [Development setup](#development-setup) for how it links into the macOS build.
 
 **How do I update?**
-Grab the latest `.dmg` from the [releases page](https://github.com/Hasan72341/nyora-mac/releases/latest) and replace the app in Applications, or update via Homebrew with `brew upgrade` if you installed that way.
+Grab the latest `.dmg` from the [releases page](https://github.com/Nyora-Manga/nyora-mac/releases/latest) and replace the app in Applications, or update via Homebrew with `brew upgrade` if you installed that way.
 
 **It missed a bubble or produced junk — what do I do?**
 Tail `/tmp/nyora_translate.log` while pressing <kbd>⌘T</kbd>, find the stage whose line count looks wrong, and open an issue or PR with the page and the log. See [Contributing](#contributing).
@@ -288,12 +288,12 @@ All platforms typeset the translation back over the original art and translate t
 
 | Platform | Repo | Get it |
 |---|---|---|
-| Android | [nyora-android](https://github.com/Hasan72341/nyora-android) | [APK](https://github.com/Hasan72341/nyora-android/releases/latest) |
-| macOS | [nyora-mac](https://github.com/Hasan72341/nyora-mac) *(you are here)* | [.dmg / brew](https://github.com/Hasan72341/nyora-mac/releases/latest) |
-| Windows | [nyora-windows](https://github.com/Hasan72341/nyora-windows) | [.exe (x64/ARM64)](https://github.com/Hasan72341/nyora-windows/releases/latest) |
-| Linux | [nyora-linux](https://github.com/Hasan72341/nyora-linux) | [deb · rpm · curl](https://github.com/Hasan72341/nyora-linux/releases/latest) |
-| iOS / iPadOS | [nyora-ios](https://github.com/Hasan72341/nyora-ios) | [sideload IPA](https://github.com/Hasan72341/nyora-ios/releases/latest) |
-| Web | [nyora-web](https://github.com/Hasan72341/nyora-web) | [nyoraweb.pages.dev](https://nyoraweb.pages.dev) |
+| Android | [nyora-android](https://github.com/Nyora-Manga/nyora-android) | [APK](https://github.com/Nyora-Manga/nyora-android/releases/latest) |
+| macOS | [nyora-mac](https://github.com/Nyora-Manga/nyora-mac) *(you are here)* | [.dmg / brew](https://github.com/Nyora-Manga/nyora-mac/releases/latest) |
+| Windows | [nyora-windows](https://github.com/Nyora-Manga/nyora-windows) | [.exe (x64/ARM64)](https://github.com/Nyora-Manga/nyora-windows/releases/latest) |
+| Linux | [nyora-linux](https://github.com/Nyora-Manga/nyora-linux) | [deb · rpm · curl](https://github.com/Nyora-Manga/nyora-linux/releases/latest) |
+| iOS / iPadOS | [nyora-ios](https://github.com/Nyora-Manga/nyora-ios) | [sideload IPA](https://github.com/Nyora-Manga/nyora-ios/releases/latest) |
+| Web | [nyora-web](https://github.com/Nyora-Manga/nyora-web) | [nyora.xyz](https://nyora.xyz) |
 
 ## Contributing
 
@@ -310,15 +310,15 @@ You can help no matter your background:
 - **Add or test a target language.** English is the default and Hindi is confirmed working; help us confirm and document more.
 - **Improve the docs.** Spot something unclear or outdated in this README? A small wording fix is a perfectly good first PR.
 - **Test releases.** Download a `.dmg`, run it on your hardware, and report back. Real-world testing across Mac models is invaluable.
-- **Star and share.** If TRANSLATE saved you a translation tab, starring [nyora-mac](https://github.com/Hasan72341/nyora-mac) and telling a friend genuinely helps the project grow.
+- **Star and share.** If TRANSLATE saved you a translation tab, starring [nyora-mac](https://github.com/Nyora-Manga/nyora-mac) and telling a friend genuinely helps the project grow.
 
 ### Help wanted — port a source
 
-The single biggest place to make an impact across Nyora is **porting sources** in the iOS engine, [NyoraEngine](https://github.com/Hasan72341/nyora-ios). The engine framework is built and the porting pattern is established, but roughly **1,331 parsers** out of **3,659 catalogued classes** still need porting — and so far the framework plus **one** template subclass are done. Most of the remaining work is **mechanical**: each source is a small template subclass that follows the same shape, so the work is highly parallelisable and ideal for a first contribution. If you would like to claim one, open an issue on the [iOS repo](https://github.com/Hasan72341/nyora-ios) so we don't double up.
+The single biggest place to make an impact across Nyora is **porting sources** in the iOS engine, [NyoraEngine](https://github.com/Nyora-Manga/nyora-ios). The engine framework is built and the porting pattern is established, but roughly **1,331 parsers** out of **3,659 catalogued classes** still need porting — and so far the framework plus **one** template subclass are done. Most of the remaining work is **mechanical**: each source is a small template subclass that follows the same shape, so the work is highly parallelisable and ideal for a first contribution. If you would like to claim one, open an issue on the [iOS repo](https://github.com/Nyora-Manga/nyora-ios) so we don't double up.
 
 ### Development setup
 
-This setup is for working on the macOS **app and translate pipeline** — distinct from simply installing the released app. The macOS app depends on the shared engine, [`nyora-shared`](https://github.com/Hasan72341/nyora-shared), which is vendored as a **public** git submodule (Apache-2.0). You can clone, read, edit and iterate on the Swift app and the TRANSLATE pipeline freely — that is where almost all the interesting OCR/translation work lives. Because the engine is open, a full from-scratch build that links the shared engine helper works for everyone: clone with `--recurse-submodules` (or run `git submodule update --init --recursive` afterwards) and you can build everything, engine included.
+This setup is for working on the macOS **app and translate pipeline** — distinct from simply installing the released app. The macOS app depends on the shared engine, [`nyora-shared`](https://github.com/Nyora-Manga/nyora-shared), which is vendored as a **public** git submodule (Apache-2.0). You can clone, read, edit and iterate on the Swift app and the TRANSLATE pipeline freely — that is where almost all the interesting OCR/translation work lives. Because the engine is open, a full from-scratch build that links the shared engine helper works for everyone: clone with `--recurse-submodules` (or run `git submodule update --init --recursive` afterwards) and you can build everything, engine included.
 
 What you need:
 
@@ -327,7 +327,7 @@ What you need:
 Clone and build:
 
 ```
-git clone --recurse-submodules https://github.com/Hasan72341/nyora-mac.git
+git clone --recurse-submodules https://github.com/Nyora-Manga/nyora-mac.git
 cd nyora-mac/macApp
 ./scripts/dev-launch.sh
 ```
@@ -342,7 +342,7 @@ tail -f /tmp/nyora_translate.log
 
 Press <kbd>⌘T</kbd> on a page and watch each stage's counts scroll past — that is your feedback loop for any OCR, dedupe, or translation change.
 
-> Maintainers' note on the submodule: the shared engine is pinned as a git submodule (`https://github.com/Hasan72341/nyora-shared.git`). When the shared layer moves forward, bump the pin with `git submodule update --remote nyora-shared` and commit the new reference alongside the change that needs it. The engine itself is open-source and public at [nyora-shared](https://github.com/Hasan72341/nyora-shared) (Apache-2.0) — contributions to it are welcome too, whether that is the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, or the downloads manager. PRs against the engine are reviewed there like any other open repo.
+> Maintainers' note on the submodule: the shared engine is pinned as a git submodule (`https://github.com/Nyora-Manga/nyora-shared.git`). When the shared layer moves forward, bump the pin with `git submodule update --remote nyora-shared` and commit the new reference alongside the change that needs it. The engine itself is open-source and public at [nyora-shared](https://github.com/Nyora-Manga/nyora-shared) (Apache-2.0) — contributions to it are welcome too, whether that is the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync, or the downloads manager. PRs against the engine are reviewed there like any other open repo.
 
 #### Configuration
 
@@ -373,7 +373,7 @@ Grounded in the actual layout above, here are real places to start:
 - **Improve the BYOK polish prompt.** The Stage 6 refiner turns literal output into natural dialogue — better prompting is a self-contained, high-value change.
 - **Fix a small UI detail** in `Views/TranslationSheet.swift` or the debug bar.
 - **Improve these docs** — a clearer sentence or a corrected step is a real contribution.
-- **Contribute to the shared engine.** [nyora-shared](https://github.com/Hasan72341/nyora-shared) is open under Apache-2.0 — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync and the downloads manager all welcome PRs.
+- **Contribute to the shared engine.** [nyora-shared](https://github.com/Nyora-Manga/nyora-shared) is open under Apache-2.0 — the source/parser runtime, the loopback REST server, the SQLDelight store, Supabase sync and the downloads manager all welcome PRs.
 - **Port a source** in the iOS engine (see [Help wanted](#help-wanted--port-a-source)) if you would rather work mechanically and in parallel.
 
 ### PR and issue etiquette
@@ -383,7 +383,7 @@ A few simple things keep reviews fast and friendly:
 - **Keep PRs focused.** One change per PR is much easier to review than a grab-bag.
 - **Describe the change.** Say what you changed and why; for pipeline fixes, attach the page and the relevant `/tmp/nyora_translate.log` lines that show the before/after.
 - **Be kind.** Reviews are a conversation, not a gate. Questions are welcome, and "I'm not sure this is right" is a fine way to open a PR.
-- **Start a discussion if unsure.** Not ready for a PR? Open an issue on the [nyora-mac Issues page](https://github.com/Hasan72341/nyora-mac/issues) and we'll figure it out together.
+- **Start a discussion if unsure.** Not ready for a PR? Open an issue on the [nyora-mac Issues page](https://github.com/Nyora-Manga/nyora-mac/issues) and we'll figure it out together.
 
 Thank you for being here. Whether you ship a parser, sharpen a heuristic, fix a typo, file a thoughtful bug, or simply star the repo and tell a friend — it all moves Nyora forward, and it is all appreciated.
 

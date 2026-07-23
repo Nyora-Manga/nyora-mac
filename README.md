@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://nyora.pages.dev/icon.png" width="120" alt="Nyora"/>
+<img src="https://nyora.xyz/icon.png" width="120" alt="Nyora"/>
 
 # Nyora — macOS
 
@@ -13,8 +13,11 @@ A fast, free, ad-free, open-source manga reader — native to macOS, built from 
 [![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://www.swift.org)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-0071E3?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![Apple Silicon](https://img.shields.io/badge/Apple-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/mac/)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift 6](https://img.shields.io/badge/Swift_6-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://www.swift.org)
 [![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Core ML](https://img.shields.io/badge/Core_ML-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://developer.apple.com/documentation/coreml)
+[![ONNX](https://img.shields.io/badge/ONNX-005CED?style=for-the-badge&logo=onnx&logoColor=white)](https://onnxruntime.ai)
 [![Homebrew](https://img.shields.io/badge/Homebrew-FBB040?style=for-the-badge&logo=homebrew&logoColor=black)](https://brew.sh)
 
 [![License: Apache 2.0](https://img.shields.io/github/license/Nyora-Manga/nyora-mac?color=blue)](LICENSE)
@@ -25,8 +28,9 @@ A fast, free, ad-free, open-source manga reader — native to macOS, built from 
 
 [![Download DMG](https://img.shields.io/badge/Download-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Nyora-Manga/nyora-mac/releases/latest)
 [![Install via Homebrew](https://img.shields.io/badge/Install-Homebrew-FBB040?style=for-the-badge&logo=homebrew&logoColor=black)](#installation)
-[![Website](https://img.shields.io/badge/Website-nyora.pages.dev-FF4655?style=for-the-badge&logo=githubpages&logoColor=white)](https://nyora.pages.dev)
-[![Open Web App](https://img.shields.io/badge/Open-Web_App-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://nyoraweb.pages.dev)
+[![Website](https://img.shields.io/badge/Website-nyora.xyz-FF4655?style=for-the-badge&logo=githubpages&logoColor=white)](https://nyora.xyz)
+[![Open Web App](https://img.shields.io/badge/Open-Web_App-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://web.nyora.xyz)
+[![Catalogue](https://img.shields.io/badge/Source_Catalogue-JSON-FF6C37?style=for-the-badge&logo=json&logoColor=white)](https://raw.githubusercontent.com/Nyora-Manga/nyora-data-driven/main/catalogue.json)
 
 **Free · ad-free · open-source · on-device translation · no account to read**
 
@@ -46,7 +50,7 @@ A fast, free, ad-free, open-source manga reader — native to macOS, built from 
 
 ## About
 
-Nyora is a native macOS manga reader written from the ground up in SwiftUI for Apple Silicon. It connects to hundreds of online catalogues, reads manga, manhwa and manhua in a clean dedicated reader, translates whole pages with an on-device AI pipeline, downloads chapters for offline reading, and keeps everything in sync across your Mac, Windows, Linux, Android, iOS and the Web — for free. No ads, no trackers, and no account required just to read. It is licensed under Apache-2.0, source-compatible with Tachiyomi/Kotatsu-style sources but not a fork.
+Nyora is a native macOS manga reader written from the ground up in SwiftUI for Apple Silicon. It connects to hundreds of online catalogues, reads manga, manhwa and manhua in a clean dedicated reader, translates whole pages with an on-device AI pipeline, downloads chapters for offline reading, and keeps everything in sync across your Mac, Windows, Linux, Android, iOS and the Web — for free. No ads, no trackers, and no account required just to read. It is licensed under Apache-2.0, original code built from scratch.
 
 **New here? In one line:** install it ([Homebrew one-liner below](#installation)), open it, and start reading — your library is yours, lives on your Mac, and syncs only if you choose to sign in.
 
@@ -117,7 +121,7 @@ Save chapters for the train, the plane, or the dead-zone cabin. Once a chapter i
 
 ### Sources & Discovery
 
-Browse, search and filter across hundreds of online sources spanning manga, manhwa and manhua, all surfaced through one clean reader and one consistent UI. Discover new titles from source catalogues, run searches across sources, and apply filters to narrow results — every library you care about behind a single native macOS front end. Nyora's source layer is source-compatible with the Tachiyomi/Kotatsu-style ecosystem, so the catalogue is broad and familiar.
+Browse, search and filter across hundreds of online sources spanning manga, manhwa and manhua, all surfaced through one clean reader and one consistent UI. Discover new titles from source catalogues, run searches across sources, and apply filters to narrow results — every library you care about behind a single native macOS front end. The source catalogue is powered by the [`nyora-data-driven`](https://github.com/Nyora-Manga/nyora-data-driven) engine via the bundled Kotlin helper.
 
 ### Cloud Sync
 
@@ -149,7 +153,7 @@ What the macOS build does today:
 | On-device text recognition | Yes | Recognition never leaves the Mac; translation uses a free, keyless endpoint. |
 | BYOK LLM polish | Optional | Paste a Mistral or OpenAI key to refine the raw translation. |
 | Offline downloads | Yes | Chapters open instantly with no connection. |
-| Hundreds of sources | Yes | Tachiyomi/Kotatsu-compatible source layer. |
+| Hundreds of sources | Yes | Powered by the [`nyora-data-driven`](https://github.com/Nyora-Manga/nyora-data-driven) engine. |
 | Cross-device sync | Yes | Nyora Cloud account (email + password); free, optional. |
 | External trackers | Yes | Progress syncs as you read. |
 | Page & webtoon reader | Yes | LTR / RTL / vertical, zoom, double-page spreads, per-title settings. |
@@ -265,14 +269,21 @@ None of this is required to build, run, or read — it only configures optional 
 [![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://www.swift.org)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-0071E3?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![Apple Silicon](https://img.shields.io/badge/Apple-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/mac/)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift 6](https://img.shields.io/badge/Swift_6-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://www.swift.org)
 [![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Core ML](https://img.shields.io/badge/Core_ML-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://developer.apple.com/documentation/coreml)
+[![ONNX](https://img.shields.io/badge/ONNX-005CED?style=for-the-badge&logo=onnx&logoColor=white)](https://onnxruntime.ai)
 [![Homebrew](https://img.shields.io/badge/Homebrew-FBB040?style=for-the-badge&logo=homebrew&logoColor=black)](https://brew.sh)
 
-- **SwiftUI** — the entire macOS front end, native and tuned for Apple Silicon.
-- **Kotlin (`nyora-shared`)** — the shared source/engine layer, reused across all Nyora platforms, run on macOS as a bundled JVM helper.
+- **Swift 6** — the entire macOS front end, written with full data-race safety (Swift 6 language mode).
+- **SwiftUI** — native UI framework tuned for Apple Silicon.
+- **Kotlin 2.1 (`nyora-shared`)** — the shared source/engine layer, reused across all Nyora platforms, run on macOS as a bundled JVM helper communicating over a loopback REST API.
 - **Apple Vision** — on-device OCR running a four-language ensemble (ja / zh-Hans / ko / en) for horizontal and Latin text.
-- **Core ML** — runs the bundled MangaOCR model for recognising dense, vertical Japanese manga lettering.
+- **Core ML** — runs the bundled MangaOCR model for recognising dense, vertical Japanese manga lettering (tategaki).
+- **ONNX Runtime** — on-device manga colorization (`manga-colorization-v2` model).
+- **Web OCR (WKWebView)** — same ONNX models from the web app run verbatim in a hidden WebView as a fallback.
+- **SQLDelight** — local SQLite database in the Kotlin engine for the manga library.
 - **Homebrew** — the recommended distribution and install channel for macOS.
 
 ## Architecture
@@ -288,12 +299,13 @@ One library. Every device. Sync ties it all together.
 | Platform | Repo | Get it |
 |---|---|---|
 | macOS | **nyora-mac** *(you are here)* | [.dmg / `brew`](https://github.com/Nyora-Manga/nyora-mac/releases/latest) |
-| Android | [nyora-android](https://github.com/Hasan72341/nyora-android) | [APK](https://github.com/Hasan72341/nyora-android/releases/latest) |
-| Windows | [nyora-windows](https://github.com/Hasan72341/nyora-windows) | [.exe (x64/ARM64)](https://github.com/Hasan72341/nyora-windows/releases/latest) |
-| Linux | [nyora-linux](https://github.com/Hasan72341/nyora-linux) | [deb · rpm · curl](https://github.com/Hasan72341/nyora-linux/releases/latest) |
-| iOS / iPadOS | [nyora-ios](https://github.com/Hasan72341/nyora-ios) | [sideload IPA](https://github.com/Hasan72341/nyora-ios/releases/latest) |
-| Web | [nyora-web](https://github.com/Hasan72341/nyora-web) | [nyoraweb.pages.dev](https://nyoraweb.pages.dev) |
+| Android | [nyora-android](https://github.com/Nyora-Manga/nyora-android) | [APK](https://github.com/Nyora-Manga/nyora-android/releases/latest) |
+| Windows | [nyora-windows](https://github.com/Nyora-Manga/nyora-windows) | [.exe (x64/ARM64)](https://github.com/Nyora-Manga/nyora-windows/releases/latest) |
+| Linux | [nyora-linux](https://github.com/Nyora-Manga/nyora-linux) | [deb · rpm · curl](https://github.com/Nyora-Manga/nyora-linux/releases/latest) |
+| iOS / iPadOS | [nyora-ios](https://github.com/Nyora-Manga/nyora-ios) | [sideload IPA](https://github.com/Nyora-Manga/nyora-ios/releases/latest) |
+| Web | [nyora-web](https://github.com/Nyora-Manga/nyora-web) | [web.nyora.xyz](https://web.nyora.xyz) |
 | Shared engine | [nyora-shared](https://github.com/Nyora-Manga/nyora-shared) | open-source Kotlin engine (Apache-2.0) — vendored as a submodule by the desktop ports |
+| Data-driven engine | [`nyora-data-driven`](https://github.com/Nyora-Manga/nyora-data-driven) | 35 generic source templates — powers the source catalogue |
 
 Every platform shares the same library and progress through cloud sync — sign in once and your collection is everywhere.
 
@@ -363,7 +375,7 @@ You don't have to write code to help — every one of these moves the project fo
 - **Improve or translate the UI.** Better wording, clearer labels, or UI strings in your language all help — the interface lives in plain SwiftUI views (see [Where Things Live](#where-things-live)).
 - **Write docs.** Clarify a confusing step, fix a typo, or improve this README and the [translation deep-dive](macApp/scripts/README-translation.md). Documentation PRs are some of the easiest to review and merge.
 - **Work on the shared engine.** `nyora-shared` is open-source and welcomes PRs upstream — the source/parser runtime, the loopback REST server, the SQLDelight store, Nyora Cloud sync and the downloads manager are all fair game for engine-level contributions.
-- **Help with sources.** Nyora's source layer is Tachiyomi/Kotatsu-compatible. The single biggest porting opportunity across the whole project lives in the iOS engine, [nyora-ios](https://github.com/Hasan72341/nyora-ios) (`NyoraEngine`): a framework and template are in place, roughly **1,300 sources remain to port** as mostly-mechanical template subclasses, and the work is highly parallelisable — an ideal "help wanted" if you want high-impact, low-ceremony contributions. Check that repo's README for the current status.
+- **Help with sources.** The [`nyora-data-driven`](https://github.com/Nyora-Manga/nyora-data-driven) engine is open-source and welcomes contributions to existing templates and new source definitions. For iOS-native porting, the biggest open opportunity is the NyoraEngine in [nyora-ios](https://github.com/Nyora-Manga/nyora-ios).
 - **Star and share.** Honestly — starring the repo and telling one friend who reads manga is one of the most useful things you can do. Discovery is the hardest part of an open-source project's life.
 
 ### Development Setup
@@ -411,7 +423,7 @@ If you want a concrete starting point, these tend to be small, self-contained, a
 - **Docs and copy.** Fix a typo, clarify an install step, or improve a section of this README or [`macApp/scripts/README-translation.md`](macApp/scripts/README-translation.md).
 - **Small UI fixes.** Tighten a layout, fix a label, or improve an empty/placeholder state in a SwiftUI view under `macApp/Nyora/NyoraApp/Views/` (e.g. `PlaceholderViews.swift`, `WelcomeView.swift`).
 - **Reader and translation polish.** Improvements to the ⌘T side-by-side sheet (`TranslationSheet.swift`, `TranslationOverlayView.swift`) or reader settings (`ReaderSettingsSheet.swift`) — a great way into the translation pipeline; read the [deep-dive](macApp/scripts/README-translation.md) first.
-- **Porting sources** (parallel, high-impact). If you'd like a steady stream of mechanical, template-driven tasks, the [nyora-ios](https://github.com/Hasan72341/nyora-ios) engine has the most room — see its README for the template and current status.
+- **Porting sources** (parallel, high-impact). If you'd like a steady stream of mechanical, template-driven tasks, the [nyora-ios](https://github.com/Nyora-Manga/nyora-ios) engine has the most room — see its README for the template and current status.
 
 ### Pull Request & Issue Etiquette
 
@@ -428,11 +440,11 @@ There is no `CONTRIBUTING.md` or formal code of conduct file yet — the guidanc
 
 ## Acknowledgements
 
-Nyora's source/engine layer is source-compatible with the Tachiyomi/Kotatsu-style ecosystem, and the project is grateful to the wider open-source manga-reader community whose work makes broad catalogue support possible. Thanks also to the open-source libraries and models — including the MangaOCR CoreML model — that power on-device translation, and to everyone who reports bugs, suggests features, and contributes code.
+Nyora's source/engine layer is powered by the [`nyora-data-driven`](https://github.com/Nyora-Manga/nyora-data-driven) project. The project is grateful to the wider open-source manga-reader community whose work makes broad catalogue support possible, and to the open-source libraries and models — including the MangaOCR CoreML model and ONNX Runtime — that power on-device translation. Thanks to everyone who reports bugs, suggests features, and contributes code.
 
 ## License
 
-Licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE). Original code, built from scratch — source-compatible with Tachiyomi/Kotatsu-style sources but not a fork.
+Licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE). Original code, built from scratch.
 
 ---
 

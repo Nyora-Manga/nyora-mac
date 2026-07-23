@@ -2650,10 +2650,10 @@ struct SettingsView: View {
             }
             settingGroup("Links") {
                 LabeledContent("Official website") {
-                    Link("nyora.pages.dev", destination: URL(string: "https://nyora.pages.dev")!)
+                    Link("nyora.xyz", destination: URL(string: "https://nyora.xyz")!)
                 }
                 LabeledContent("Source code") {
-                    Link("Hasan72341/nyora-mac", destination: URL(string: "https://github.com/Hasan72341/nyora-mac")!)
+                    Link("Hasan72341/nyora-mac", destination: URL(string: "https://github.com/Nyora-Manga/nyora-mac")!)
                 }
             }
             // Attribution is a real row, not a footer — a Section whose only
