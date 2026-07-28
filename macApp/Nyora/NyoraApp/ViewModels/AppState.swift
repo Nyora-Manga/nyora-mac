@@ -175,6 +175,23 @@ final class AppState: ObservableObject {
         setSources(updated)
     }
 
+    /// The OCR/source language actually used for translation. "Auto" resolves
+    /// from the open manga's own source language, matching the web reader —
+    /// otherwise a Korean title opened with the Japanese default is OCR'd as
+    /// Japanese and every bubble comes back wrong. Resolution uses the active
+    /// source, so it falls back to Japanese when that is not known.
+    var effectiveSourceLang: String {
+        guard translateSettings.sourceLang == TranslationSettings.autoSourceLanguage else {
+            return translateSettings.sourceLang
+        }
+        let code = activeSourceSummary?.lang.lowercased() ?? ""
+        if code.hasPrefix("ja") { return "Japanese" }
+        if code.hasPrefix("ko") { return "Korean" }
+        if code.hasPrefix("zh") || code.hasPrefix("ch") { return "Chinese" }
+        if code.hasPrefix("en") { return "English" }
+        return "Japanese"
+    }
+
     /// The currently-selected source, resolved from the list.
     var activeSourceSummary: SourceSummary? {
         guard let id = selectedSourceId else { return nil }
@@ -631,7 +648,7 @@ final class AppState: ObservableObject {
                     chapterTranslator.start(
                         chapterId: chapter.url,
                         pageUrls: pageUrls,
-                        sourceLang: translateSettings.sourceLang,
+                        sourceLang: effectiveSourceLang,
                         targetCode: translateSettings.googleLangCode(for: translateSettings.targetLang),
                         settings: translateSettings,
                         responseTextScale: CGFloat(readerPrefs.translationResponseScale),
@@ -1553,7 +1570,7 @@ final class AppState: ObservableObject {
                 chapterId: chapterId,
                 pageIndex: pageIdx,
                 pageUrl: url,
-                sourceLang: self.translateSettings.sourceLang,
+                sourceLang: self.effectiveSourceLang,
                 targetCode: self.translateSettings.googleLangCode(for: self.translateSettings.targetLang),
                 settings: self.translateSettings,
                 responseTextScale: CGFloat(self.readerPrefs.translationResponseScale),

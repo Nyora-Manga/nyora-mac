@@ -180,7 +180,9 @@ final class TranslationSettings: ObservableObject {
 
     /// Source languages the OCR actually supports (manga-ocr = ja, PaddleOCR = zh/ko/en).
     /// The source picker is restricted to these; the target can be any supported language.
-    static let sourceLanguages = ["Japanese", "Chinese", "Korean", "English"]
+    /// Sentinel for "work it out from the manga", mirroring the web reader.
+    static let autoSourceLanguage = "Auto (source language)"
+    static let sourceLanguages = [autoSourceLanguage, "Japanese", "Chinese", "Korean", "English"]
 
     static let supportedLanguages = [
         "AUTO", "English", "Japanese", "Chinese", "Korean",
