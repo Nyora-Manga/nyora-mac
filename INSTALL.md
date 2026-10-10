@@ -27,7 +27,7 @@ The `.zip` is an alternative containing the application bundle. Quit Nyora befor
 ## Windows
 
 1. Download the matching `.exe` installer and run it.
-2. Choose the installation location and launch Nyora.
+2. After installation, launch Nyora from the Start menu.
 3. These initial builds are unsigned. Windows may show an unknown-publisher warning; confirm the source and checksum before proceeding.
 
 The `.zip` is a portable alternative. Extract the entire archive and run `Nyora.exe`; keep its resources beside it. Windows on ARM should use arm64, not x64 emulation.
