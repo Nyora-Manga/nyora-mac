@@ -10,15 +10,4 @@ concurrency:
   cancel-in-progress: false
 jobs:
   mirror:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-      - name: Verify and mirror both architectures
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UPSTREAM_TOKEN: ${{ secrets.DESKTOP_RELEASE_READ_TOKEN }}
-        run: node .github/scripts/mirror-release.mjs
+    uses: Nyora-Manga/nyora-desktop/.github/workflows/mirror-release.yml@main
